@@ -12,20 +12,34 @@ import sounddevice as sd
 from websockets.sync.client import connect
 
 from .audio import FRAME_SAMPLES, SAMPLE_RATE, UtteranceCapture
+from .listener_control import ListenerStopped
 from .realtime import MAX_OUTPUT_BYTES
 from .wake import VoskWakeDetector
 
 
 class RealtimeClient:
-    def __init__(self, config):
+    def __init__(self, config, control=None):
         self.config = config
         self.session = str(uuid.uuid4())
         self.turn = None
         self.ws = None
         self.connection = None
+        self.control = control
 
     def receive(self, timeout=130):
-        event = json.loads(self.ws.recv(timeout=timeout))
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("等待实时服务超时。")
+            if self.control:
+                self.control.check()
+            try:
+                event = json.loads(self.ws.recv(timeout=min(remaining, 0.2) if self.control else remaining))
+                break
+            except TimeoutError:
+                if self.control is None:
+                    raise
         if event.get("type") == "error":
             raise ValueError(event.get("error", "实时语音处理失败。"))
         return event
@@ -62,6 +76,8 @@ class RealtimeClient:
 
     def append(self, pcm):
         for offset in range(0, len(pcm), 3200):
+            if self.control:
+                self.control.check()
             self.ws.send(pcm[offset:offset + 3200])
 
     def finish(self):
@@ -91,7 +107,7 @@ class RealtimeClient:
                 raise ValueError("实时服务返回了未知事件。")
 
 
-def captured_chunks(config, detector):
+def captured_chunks(config, detector, control=None):
     """Yield pre-roll exactly once, then live PCM; capture continues during sends."""
     settings = config["device"]
     capture = UtteranceCapture(detector, settings)
@@ -109,11 +125,17 @@ def captured_chunks(config, detector):
 
     with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES,
                            device=settings.get("input_device"), channels=1, dtype="int16", callback=callback):
+        last_frame = time.monotonic()
         while True:
+            if control:
+                control.check()
             try:
-                frame = frames.get(timeout=5)
+                frame = frames.get(timeout=0.2 if control else 5)
             except queue.Empty as error:
+                if control and time.monotonic() - last_frame < 5:
+                    continue
                 raise ValueError("麦克风未返回音频，请检查设备。") from error
+            last_frame = time.monotonic()
             if overflow.is_set():
                 raise ValueError("采音缓冲溢出，本轮已取消，请重启设备端。")
             was_waiting = capture.frames is None
@@ -127,39 +149,58 @@ def captured_chunks(config, detector):
                 return
 
 
-def play_stream(client, output_device):
+def play_stream(client, output_device, control=None):
+    reply = ""
+    playing = False
     with sd.RawOutputStream(samplerate=24000, channels=1, dtype="int16", device=output_device) as output:
         try:
             for event in client.finish():
                 if event["type"] == "audio":
-                    output.write(event["pcm"])
+                    pcm = event["pcm"]
+                    if control and not playing:
+                        control.emit("playing")
+                        playing = True
+                    for offset in range(0, len(pcm), 4800):
+                        if control:
+                            control.check()
+                        output.write(pcm[offset:offset + 4800])
                 else:
                     print(event["text"], end="", flush=True)
+                    if control:
+                        reply = (reply + event["text"])[:4000]
+            if control and reply:
+                control.emit("reply", reply)
             print()
         except BaseException:
             output.abort()
             raise
 
 
-def listen_realtime(config):
+def listen_realtime(config, control=None):
     settings = config["device"]
     detector = VoskWakeDetector(settings["wake_model"], settings["wake_word"])
     try:
-        with RealtimeClient(config) as client:
+        with RealtimeClient(config, control) as client:
             print(f"S2S 已连接，等待唤醒：{settings['wake_word']}。可直接连说内容，Ctrl+C 退出。", flush=True)
             while True:
+                if control:
+                    control.emit("waiting")
                 started = False
-                with closing(captured_chunks(config, detector)) as chunks:
+                with closing(captured_chunks(config, detector, control)) as chunks:
                     for pcm in chunks:
                         if not started:
+                            if control:
+                                control.emit("awakened", settings["wake_word"])
                             client.begin()
                             started = True
                             print("已唤醒，正在传送语音。", flush=True)
                         client.append(pcm)
                 print("正在回复…", flush=True)
-                play_stream(client, settings.get("output_device"))
+                if control:
+                    control.emit("processing")
+                play_stream(client, settings.get("output_device"), control)
                 print("等待唤醒。", flush=True)
-    except (ValueError, sd.PortAudioError):
+    except (ValueError, sd.PortAudioError, ListenerStopped):
         raise
     except Exception as error:
         raise ValueError("实时连接已断开，请检查网络和服务状态后重启设备端。") from error

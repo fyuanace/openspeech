@@ -9,6 +9,7 @@ import numpy as np
 import sounddevice as sd
 
 from .audio import FRAME_SAMPLES, SAMPLE_RATE, UtteranceCapture, decode_wav, encode_wav
+from .listener_control import ListenerControl
 from .wake import VoskWakeDetector
 
 
@@ -46,21 +47,41 @@ def send_turn(config: dict, wav: bytes, session: str, turn: str) -> dict:
         raise
 
 
-def play_result(result: dict, output_device=None) -> None:
+def play_result(result: dict, output_device=None, control=None) -> None:
     print("识别", result["text"])
     print("回复", result["reply"])
+    if control:
+        control.emit("transcript", result["text"])
+        control.emit("reply", result["reply"])
     if result.get("audio"):
         pcm, rate, channels = decode_wav(base64.b64decode(result["audio"], validate=True))
         samples = np.frombuffer(pcm, dtype="<i2").reshape(-1, channels)
-        sd.play(samples, rate, device=output_device, blocking=True)
+        if control is None:
+            sd.play(samples, rate, device=output_device, blocking=True)
+        else:
+            control.emit("playing")
+            sd.play(samples, rate, device=output_device, blocking=False)
+            try:
+                stream = sd.get_stream()
+                while stream.active and not control.stop.wait(0.05):
+                    pass
+                control.check()
+            finally:
+                sd.stop()
     elif result.get("audio_error"):
         print(result["audio_error"])
+        if control:
+            control.emit("error", result["audio_error"])
 
 
-def listen(config: dict, *, wake_only: bool = False, seconds: float = 60) -> None:
+def listen(config: dict, *, wake_only: bool = False, seconds: float = 60, control=None) -> None:
+    managed = control is not None
+    control = control or ListenerControl()
+    control.emit("connecting")
     if not wake_only and server_mode(config) == "s2s":
         from .realtime_device import listen_realtime
-        return listen_realtime(config)
+        return listen_realtime(config, control=control if managed else None)
+    control.check()
     settings = config["device"]
     detector = VoskWakeDetector(settings["wake_model"], settings["wake_word"])
     capture = UtteranceCapture(detector, settings)
@@ -84,6 +105,7 @@ def listen(config: dict, *, wake_only: bool = False, seconds: float = 60) -> Non
     if wake_only:
         print(f"本地唤醒测试，最长 {seconds:g} 秒，完成一条录音后结束。", flush=True)
     while time.monotonic() < deadline:
+        control.emit("waiting")
         capture.reset()
         while not frames.empty():
             frames.get_nowait()
@@ -92,20 +114,26 @@ def listen(config: dict, *, wake_only: bool = False, seconds: float = 60) -> Non
         with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES,
                                device=settings.get("input_device"), channels=1, dtype="int16",
                                callback=callback):
+            last_frame = time.monotonic()
             while True:
+                control.check()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     print(f"测试结束。唤醒次数 {wakes}，最高音量 RMS {peak_rms:.0f}。", flush=True)
                     return
                 try:
-                    frame = frames.get(timeout=min(5, remaining))
+                    frame = frames.get(timeout=min(0.2 if managed else 5, remaining))
                 except queue.Empty as error:
                     if time.monotonic() >= deadline:
                         print(f"测试结束。唤醒次数 {wakes}，最高音量 RMS {peak_rms:.0f}。", flush=True)
                         return
+                    if managed and time.monotonic() - last_frame < 5:
+                        continue
                     raise ValueError("麦克风未返回音频，请检查设备连接与系统权限。") from error
+                last_frame = time.monotonic()
                 if overflow.is_set():
                     print("采音缓冲溢出，请重新唤醒。")
+                    control.emit("error", "采音缓冲溢出，请重新唤醒。")
                     break
                 was_waiting = capture.frames is None
                 if wake_only:
@@ -119,6 +147,7 @@ def listen(config: dict, *, wake_only: bool = False, seconds: float = 60) -> Non
                         last_text = recognized
                 if was_waiting and capture.frames is not None:
                     wakes += 1
+                    control.emit("awakened", settings["wake_word"])
                     print("已唤醒，正在收集本轮语音。", flush=True)
                 if utterance is not None:
                     break
@@ -130,9 +159,11 @@ def listen(config: dict, *, wake_only: bool = False, seconds: float = 60) -> Non
             print(f"最高音量 RMS {peak_rms:.0f}。可以关闭窗口，下一步验证模型接口。", flush=True)
             return
         print("正在处理…")
+        control.emit("processing")
         try:
             result = send_turn(config, encode_wav(utterance), session, str(uuid.uuid4()))
-            play_result(result, settings.get("output_device"))
+            play_result(result, settings.get("output_device"), control if managed else None)
         except (ValueError, sd.PortAudioError) as error:
             print(str(error))
+            control.emit("error", str(error))
         print("等待唤醒。")
