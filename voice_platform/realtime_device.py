@@ -122,6 +122,9 @@ class RealtimeClient:
                 yield {"type": "audio", "pcm": pcm}
             elif event["type"] == "text.delta":
                 yield {"type": "text", "text": event["text"]}
+            elif event["type"] == "session.ended":
+                yield {"type": "session.ended"}
+                return
             elif event["type"] == "turn.done":
                 if not size:
                     raise ValueError("实时服务未返回语音。")
@@ -181,11 +184,14 @@ def captured_chunks(config, detector, control=None, *, start_timeout=None):
 
 
 def play_stream(client, output_device, control=None):
+    """Play one response and report whether the server ended the conversation."""
     reply = ""
     playing = False
     with sd.RawOutputStream(samplerate=24000, channels=1, dtype="int16", device=output_device) as output:
         try:
             for event in client.finish():
+                if event["type"] == "session.ended":
+                    return True
                 if event["type"] == "audio":
                     pcm = event["pcm"]
                     if control and not playing:
@@ -202,6 +208,7 @@ def play_stream(client, output_device, control=None):
             if control and reply:
                 control.emit("reply", reply)
             print()
+            return False
         except BaseException:
             output.abort()
             raise
@@ -268,7 +275,14 @@ def listen_realtime(config, control=None):
                     opening.result()
                     for buffered in pending:
                         client.append(buffered)
-                    play_stream(client, settings.get("output_device"), control)
+                    ended = play_stream(client, settings.get("output_device"), control)
+                    if ended:
+                        client.__exit__(None, None, None)
+                        follow_up = False
+                        print("对话已结束，等待唤醒。", flush=True)
+                        if control:
+                            control.emit("conversation_ended", "已执行服务端退出工具")
+                        continue
                     follow_up = follow_up_seconds > 0
                     if follow_up:
                         print(f"可以直接追问，等待 {follow_up_seconds:g} 秒。", flush=True)

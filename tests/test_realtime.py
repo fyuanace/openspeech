@@ -98,6 +98,28 @@ class RealtimeProtocolTests(unittest.TestCase):
         self.assertTrue(self.sessions[0].closed)
         self.assertEqual(self.sessions[0].frames, [])
 
+    def test_terminal_tool_closes_only_its_own_session(self):
+        class Ending(FakeSession):
+            async def respond(self):
+                yield {"type": "session.ended"}
+
+        ending = Ending()
+        other = FakeSession()
+        peers = iter((ending, other))
+        client = TestClient(create_app(CONFIG, realtime_factory=lambda config: next(peers)))
+        with client.websocket_connect("/v1/realtime", headers=HEADERS) as ws:
+            self.start(ws)
+            with client.websocket_connect("/v1/realtime", headers=HEADERS) as second:
+                self.start(second, session="other")
+                ws.send_json({"type": "turn.start", "turn_id": "one"})
+                ws.send_bytes(bytes(3200))
+                ws.send_json({"type": "input.commit", "turn_id": "one"})
+                self.assertEqual(ws.receive_json(), {"type": "session.ended", "session_id": "session", "turn_id": "one"})
+                with self.assertRaises(WebSocketDisconnect):
+                    ws.receive_json()
+                self.assertTrue(ending.closed)
+                self.assertFalse(other.closed)
+
     def test_missing_key_reports_s2s_without_initializing_cascade(self):
         config = copy.deepcopy(CONFIG)
         config["stt"]["provider"] = "invalid-unused-provider"
@@ -176,7 +198,10 @@ class RealtimeListenerTests(unittest.TestCase):
     def test_local_exit_closes_conversation_without_uploading_command(self):
         self.check_follow_up_end(exit_command=True)
 
-    def check_follow_up_end(self, *, exit_command):
+    def test_server_exit_returns_listener_to_waiting_without_a_reply(self):
+        self.check_follow_up_end(exit_command=False, server_exit=True)
+
+    def check_follow_up_end(self, *, exit_command, server_exit=False):
         from voice_platform.audio import SpeechStartDetector
         from voice_platform.listener_control import ListenerControl, ListenerStopped
         from voice_platform.realtime_device import listen_realtime
@@ -191,7 +216,7 @@ class RealtimeListenerTests(unittest.TestCase):
             detectors.append((detector, start_timeout))
             if len(detectors) <= 2:
                 yield b"first" if len(detectors) == 1 else b"follow-up"
-            elif len(detectors) == (3 if exit_command else 4):
+            elif len(detectors) == (3 if exit_command or server_exit else 4):
                 raise ListenerStopped()
 
         client = SimpleNamespace(start_turn=lambda: None, append=received.append,
@@ -201,17 +226,20 @@ class RealtimeListenerTests(unittest.TestCase):
                 patch("voice_platform.realtime_device.VoskWakeDetector", return_value=first), \
                 patch("voice_platform.realtime_device.captured_chunks", side_effect=capture), \
                 patch("voice_platform.realtime_device.is_conversation_exit", return_value=exit_command), \
-                patch("voice_platform.realtime_device.play_stream"):
+                patch("voice_platform.realtime_device.play_stream", side_effect=[False, server_exit]):
             with self.assertRaises(ListenerStopped):
                 listen_realtime(CONFIG, control=control)
         self.assertEqual(received, [b"first"] if exit_command else [b"first", b"follow-up"])
-        end_events = ["conversation_ended"] if exit_command else ["processing", "follow_up"]
+        if exit_command:
+            end_events = ["conversation_ended"]
+        else:
+            end_events = ["processing", "conversation_ended" if server_exit else "follow_up"]
         self.assertEqual(events, ["waiting", "awakened", "processing", "follow_up",
                                   "recording", *end_events, "waiting"])
         self.assertEqual(detectors[0], (first, None))
         self.assertEqual(detectors[-1], (first, None))
         self.assertIsInstance(detectors[1][0], SpeechStartDetector)
-        self.assertEqual([timeout for _, timeout in detectors[1:-1]], [20] if exit_command else [20, 20])
+        self.assertEqual([timeout for _, timeout in detectors[1:-1]], [20] if exit_command or server_exit else [20, 20])
         self.assertEqual(len(closed), 2)  # Conversation end and listener shutdown.
 
     def test_capture_keeps_audio_while_realtime_session_is_opening(self):
@@ -242,6 +270,22 @@ class RealtimeListenerTests(unittest.TestCase):
 
 
 class QwenProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exit_tool_is_terminal_and_cannot_select_another_session(self):
+        for arguments in ("{}", '{"session_id":"other"}'):
+            peer = QwenRealtimeSession(CONFIG)
+            peer.send = AsyncMock()
+            peer.wait_for = AsyncMock()
+            peer.receive = AsyncMock(return_value={
+                "type": "response.function_call_arguments.done",
+                "name": "end_conversation", "arguments": arguments,
+            })
+            if arguments == "{}":
+                self.assertEqual([event async for event in peer.respond()], [{"type": "session.ended"}])
+            else:
+                with self.assertRaises(ProviderError):
+                    _ = [event async for event in peer.respond()]
+            self.assertEqual(peer.send.await_count, 2)  # Commit and initial response only.
+
     async def test_failed_model_response_is_not_reported_as_success(self):
         peer = QwenRealtimeSession(CONFIG)
         peer.send = AsyncMock()

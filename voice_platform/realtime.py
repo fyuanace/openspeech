@@ -15,6 +15,7 @@ INPUT_RATE = 16000
 OUTPUT_RATE = 24000
 MAX_TURN_BYTES = INPUT_RATE * 2 * 35
 MAX_OUTPUT_BYTES = OUTPUT_RATE * 2 * 120
+END_CONVERSATION_TOOL = "end_conversation"
 
 
 class RealtimeSession(Protocol):
@@ -79,9 +80,21 @@ class QwenRealtimeSession:
             await self.wait_for("session.created")
             instructions = self.settings.get("instructions", "用简短自然的中文回答。")
             instructions += f" 用户以{self.wake_word}唤醒你，请回答随后内容，不要复述唤醒词。"
+            instructions += (
+                " 如果用户明确要求结束和小美的当前对话（例如“退下”“今天聊到这儿吧”），"
+                "直接调用 end_conversation。询问如何退出、引用退出的话、关灯或关闭其他对象时，"
+                "继续按用户的实际请求回答。"
+            )
             await self.send("session.update", session={
                 "modalities": ["text", "audio"], "turn_detection": None,
                 "instructions": instructions,
+                "tools": [{
+                    "type": "function",
+                    "name": END_CONVERSATION_TOOL,
+                    "description": "用户明确要求结束与小美的当前连续对话时，关闭本次会话并回到等待唤醒。",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                }],
+                "tool_choice": "auto",
                 "audio": {"input": {"format": {
                     "type": "pcm", "sample_rate": INPUT_RATE, "sample_format": "s16le",
                     "channels": 1, "packing": "interleaved", "channel_layout": "mono"}},
@@ -110,7 +123,17 @@ class QwenRealtimeSession:
                     response_id = event.get("response", {}).get("id")
                 if response_id and event.get("response_id", response_id) != response_id:
                     continue
-                if kind == "response.audio.delta":
+                if kind == "response.function_call_arguments.done":
+                    try:
+                        arguments = json.loads(event.get("arguments", ""))
+                    except (ValueError, TypeError) as error:
+                        raise ProviderError("s2s", "模型返回了无效的会话工具参数。") from error
+                    if event.get("name") != END_CONVERSATION_TOOL or arguments != {}:
+                        raise ProviderError("s2s", "模型返回了未授权的会话工具调用。")
+                    # Terminal tool: the platform closes this socket instead of asking for another response.
+                    yield {"type": "session.ended"}
+                    return
+                elif kind == "response.audio.delta":
                     pcm = base64.b64decode(event["delta"], validate=True)
                     output_bytes += len(pcm)
                     if len(pcm) % 2 or output_bytes > MAX_OUTPUT_BYTES:

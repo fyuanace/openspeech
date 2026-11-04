@@ -96,6 +96,9 @@ def register_realtime(app, config, factory=build_realtime):
                 async def pump():
                     async for response in peer.respond():
                         await socket.send_json({**response, "session_id": key[1], "turn_id": turn})
+                        if response["type"] == "session.ended":
+                            return True
+                    return False
 
                 # Watch disconnects during generation; never keep a paid upstream running after departure.
                 output = asyncio.create_task(pump())
@@ -103,7 +106,8 @@ def register_realtime(app, config, factory=build_realtime):
                 try:
                     done, _ = await asyncio.wait({output, incoming}, return_when=asyncio.FIRST_COMPLETED)
                     if output in done:
-                        await output
+                        if await output:
+                            return
                         if incoming.done():
                             pending = incoming.result()
                     else:
