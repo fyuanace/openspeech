@@ -3,7 +3,10 @@ import copy
 import json
 import threading
 import unittest
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -43,6 +46,41 @@ class StubTTS:
 
 
 class CaptureTests(unittest.TestCase):
+    def test_wake_phrase_uses_model_vocabulary_and_rejects_unknown_words(self):
+        from voice_platform.wake import wake_tokens
+
+        model = SimpleNamespace(vosk_model_find_word=lambda word: 1 if word in {"你好", "助手"} else -1)
+        self.assertEqual(wake_tokens(model, "你好助手"), ["你好", "助手"])
+        with self.assertRaises(ValueError):
+            wake_tokens(model, "你好管家")
+
+    def test_wake_test_finishes_without_calling_any_server(self):
+        from voice_platform.device import listen
+
+        detector = SimpleNamespace(process=lambda pcm: True, reset=lambda: None, last_text="你好助手")
+        frames = [np.full(FRAME_SAMPLES, 1000, dtype="<i2").tobytes()] * 20
+        frames += [bytes(FRAME_SAMPLES * 2)] * 60
+
+        class InputStream:
+            def __init__(self, **kwargs):
+                self.callback = kwargs["callback"]
+
+            def __enter__(self):
+                for frame in frames:
+                    self.callback(frame, FRAME_SAMPLES, None, SimpleNamespace(input_overflow=False))
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        output = io.StringIO()
+        with patch("voice_platform.device.VoskWakeDetector", return_value=detector), \
+                patch("voice_platform.device.sd.RawInputStream", InputStream), \
+                patch("voice_platform.device.send_turn") as send, redirect_stdout(output):
+            listen(CONFIG, wake_only=True, seconds=1)
+        send.assert_not_called()
+        self.assertIn("唤醒测试通过", output.getvalue())
+
     def test_delayed_wake_preserves_prefix_and_each_frame_once(self):
         class Detector:
             count = 0

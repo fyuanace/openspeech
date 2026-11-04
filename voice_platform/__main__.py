@@ -9,9 +9,10 @@ from .config import initialize_config, load_config
 
 def main():
     parser = argparse.ArgumentParser(description="独立语音平台")
-    parser.add_argument("command", choices=["init-config", "serve", "listen", "devices", "doctor", "send-wav"])
+    parser.add_argument("command", choices=["init-config", "serve", "listen", "wake-test", "devices", "doctor", "send-wav"])
     parser.add_argument("--config", default="config.local.json")
     parser.add_argument("--file", help="send-wav 的输入 WAV")
+    parser.add_argument("--seconds", type=float, default=60, help="唤醒测试时长，1–300 秒")
     args = parser.parse_args()
     try:
         if args.command == "init-config":
@@ -28,9 +29,11 @@ def main():
             from .server import create_app
             uvicorn.run(create_app(config), host=config["server"]["host"],
                         port=int(config["server"]["port"]), access_log=False)
-        elif args.command == "listen":
+        elif args.command in ("listen", "wake-test"):
             from .device import listen
-            listen(config)
+            if not 1 <= args.seconds <= 300:
+                raise ValueError("测试时长必须为 1–300 秒。")
+            listen(config, wake_only=args.command == "wake-test", seconds=args.seconds)
         elif args.command == "send-wav":
             from .device import play_result, send_turn
             from .audio import decode_wav

@@ -1,6 +1,7 @@
 import base64
 import queue
 import threading
+import time
 import uuid
 
 import httpx
@@ -43,13 +44,17 @@ def play_result(result: dict, output_device=None) -> None:
         print(result["audio_error"])
 
 
-def listen(config: dict) -> None:
+def listen(config: dict, *, wake_only: bool = False, seconds: float = 60) -> None:
     settings = config["device"]
     detector = VoskWakeDetector(settings["wake_model"], settings["wake_word"])
     capture = UtteranceCapture(detector, settings)
     frames: queue.Queue = queue.Queue(maxsize=250)
     overflow = threading.Event()
     session = str(uuid.uuid4())
+    deadline = time.monotonic() + seconds if wake_only else float("inf")
+    peak_rms = 0.0
+    wakes = 0
+    last_text = ""
 
     def callback(data, count, timing, status):
         if status.input_overflow:
@@ -60,7 +65,9 @@ def listen(config: dict) -> None:
             overflow.set()
 
     print(f"等待唤醒：{settings['wake_word']}。可直接连说内容，Ctrl+C 退出。")
-    while True:
+    if wake_only:
+        print(f"本地唤醒测试，最长 {seconds:g} 秒，完成一条录音后结束。", flush=True)
+    while time.monotonic() < deadline:
         capture.reset()
         while not frames.empty():
             frames.get_nowait()
@@ -70,21 +77,42 @@ def listen(config: dict) -> None:
                                device=settings.get("input_device"), channels=1, dtype="int16",
                                callback=callback):
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    print(f"测试结束。唤醒次数 {wakes}，最高音量 RMS {peak_rms:.0f}。", flush=True)
+                    return
                 try:
-                    frame = frames.get(timeout=5)
+                    frame = frames.get(timeout=min(5, remaining))
                 except queue.Empty as error:
+                    if time.monotonic() >= deadline:
+                        print(f"测试结束。唤醒次数 {wakes}，最高音量 RMS {peak_rms:.0f}。", flush=True)
+                        return
                     raise ValueError("麦克风未返回音频，请检查设备连接与系统权限。") from error
                 if overflow.is_set():
                     print("采音缓冲溢出，请重新唤醒。")
                     break
                 was_waiting = capture.frames is None
+                if wake_only:
+                    samples = np.frombuffer(frame, dtype="<i2").astype(np.float32)
+                    peak_rms = max(peak_rms, float(np.sqrt(np.mean(samples * samples))))
                 utterance = capture.feed(frame)
+                if wake_only and was_waiting:
+                    recognized = detector.last_text
+                    if recognized and recognized != last_text:
+                        print(f"本地识别：{recognized}", flush=True)
+                        last_text = recognized
                 if was_waiting and capture.frames is not None:
-                    print("已唤醒，继续说。")
+                    wakes += 1
+                    print("已唤醒，正在收集本轮语音。", flush=True)
                 if utterance is not None:
                     break
         if overflow.is_set():
             continue
+        if wake_only:
+            duration = len(utterance) / (SAMPLE_RATE * 2)
+            print(f"唤醒测试通过，已收集 {duration:.2f} 秒音频，包含唤醒前缓冲。", flush=True)
+            print(f"最高音量 RMS {peak_rms:.0f}。可以关闭窗口，下一步验证模型接口。", flush=True)
+            return
         print("正在处理…")
         try:
             result = send_turn(config, encode_wav(utterance), session, str(uuid.uuid4()))

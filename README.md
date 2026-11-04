@@ -28,7 +28,8 @@
 ## 启动入口
 
 1. 运行 `setup.cmd` 准备独立环境与中文唤醒模型。
-2. 配置豆包和 DeepSeek 凭据。
-3. 分别运行 `start-server.cmd` 与 `start-device.cmd`。
+2. 运行 `test-wake.cmd` 验证系统麦克风和连续语音唤醒。
+3. 配置豆包和 DeepSeek 凭据。
+4. 分别运行 `start-server.cmd` 与 `start-device.cmd`。
 
 具体配置、限制及验证命令见[运行指南](docs/运行指南.md)。
