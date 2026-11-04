@@ -246,12 +246,13 @@ def run_tray(config):
                     floating.withdraw()
             elif kind in ("wake", "activity"):
                 show_log(kind)
-            elif kind in STATUS or kind in ("reply", "transcript", "error", "backend_unavailable"):
+            elif kind in STATUS or kind in ("reply", "transcript", "error", "backend_unavailable", "conversation_ended"):
                 if state == "pausing":
                     continue
                 label = STATUS[kind][0] if kind in STATUS else {
                     "reply": "回复", "transcript": "识别", "error": "错误",
                     "backend_unavailable": "服务端未就绪",
+                    "conversation_ended": "对话已结束",
                 }[kind]
                 history.append((kind, f"{datetime.now():%H:%M:%S}  {label}  {detail[:4000]}".rstrip()))
                 if kind in STATUS:

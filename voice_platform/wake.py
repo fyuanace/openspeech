@@ -1,6 +1,22 @@
 import json
+from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
+
+from .audio import SAMPLE_RATE
+
+
+def is_conversation_exit(model, chunks: Iterable[bytes]) -> bool:
+    from vosk import KaldiRecognizer
+
+    recognizer = KaldiRecognizer(model, SAMPLE_RATE)
+    segments = []
+    for pcm in chunks:
+        if recognizer.AcceptWaveform(pcm):
+            segments.append(json.loads(recognizer.Result()).get("text", ""))
+    segments.append(json.loads(recognizer.FinalResult()).get("text", ""))
+    text = "".join("".join(segments).split())
+    return text in {"退出", "请退出", "结束对话"}
 
 
 def wake_tokens(model, phrase: str) -> list[str]:

@@ -6,11 +6,21 @@ from pathlib import Path
 from voice_platform.audio import UtteranceCapture, decode_wav
 from voice_platform.config import load_config
 from voice_platform.providers import WindowsTTS
-from voice_platform.wake import VoskWakeDetector
+from voice_platform.wake import VoskWakeDetector, is_conversation_exit
 
 
 @unittest.skipUnless(os.environ.get("VOICE_TEST_WAKE_MODEL") == "1", "requires local Vosk model and Windows TTS")
 class WakeModelTests(unittest.TestCase):
+    def test_local_exit_recognizes_complete_command_only(self):
+        config = load_config(Path(__file__).parents[1] / "config.local.json")
+        detector = VoskWakeDetector(config["device"]["wake_model"], config["device"]["wake_word"])
+        tts = WindowsTTS(config["tts"].get("voice", ""))
+        for phrase, expected in (("退出", True), ("结束对话", True), ("怎么退出登录", False), ("退出登录", False)):
+            with self.subTest(phrase=phrase):
+                pcm, rate, channels = decode_wav(tts.synthesize(phrase))
+                self.assertEqual((rate, channels), (16000, 1))
+                self.assertEqual(is_conversation_exit(detector.model, [pcm, bytes(38400)]), expected)
+
     def test_positive_negative_phrases_and_continuous_capture(self):
         config = load_config(Path(__file__).parents[1] / "config.local.json")
         detector = VoskWakeDetector(config["device"]["wake_model"], "小美小美")

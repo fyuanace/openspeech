@@ -17,7 +17,7 @@ from websockets.protocol import State
 from .audio import FRAME_SAMPLES, SAMPLE_RATE, SpeechStartDetector, UtteranceCapture
 from .listener_control import ListenerStopped
 from .realtime import MAX_OUTPUT_BYTES
-from .wake import VoskWakeDetector
+from .wake import VoskWakeDetector, is_conversation_exit
 
 
 class RealtimeClient:
@@ -228,13 +228,17 @@ def listen_realtime(config, control=None):
                     with closing(captured_chunks(config, speech_start if follow_up else detector, control,
                                                  start_timeout=follow_up_seconds if follow_up else None)) as chunks:
                         for pcm in chunks:
+                            if follow_up:
+                                if not pending:
+                                    if control:
+                                        control.emit("recording")
+                                    print("正在收集追问。", flush=True)
+                                pending.append(pcm)
+                                continue
                             if opening is None:
                                 if control:
-                                    if follow_up:
-                                        control.emit("recording")
-                                    else:
-                                        control.emit("awakened", settings["wake_word"])
-                                print("正在收集追问。" if follow_up else "已唤醒，正在收集本轮语音。", flush=True)
+                                    control.emit("awakened", settings["wake_word"])
+                                print("已唤醒，正在收集本轮语音。", flush=True)
                                 opening = network.submit(client.start_turn)
                             if opening.done():
                                 opening.result()
@@ -245,11 +249,19 @@ def listen_realtime(config, control=None):
                             else:
                                 # Capture bounds this buffer to one utterance.
                                 pending.append(pcm)
-                    if opening is None:
-                        if follow_up:
+                    if follow_up:
+                        exit_command = bool(pending) and is_conversation_exit(detector.model, pending)
+                        if control:
+                            control.check()
+                        if not pending or exit_command:
                             client.__exit__(None, None, None)
                             follow_up = False
                             print("对话已结束，等待唤醒。", flush=True)
+                            if exit_command and control:
+                                control.emit("conversation_ended", "已执行本地退出指令")
+                            continue
+                        opening = network.submit(client.start_turn)
+                    if opening is None:
                         continue
                     if control:
                         control.emit("processing")
