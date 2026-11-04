@@ -25,6 +25,19 @@ h1 { font-size: 23px; margin: 0; }
 .status { padding: 5px 11px; background: #fff; border: 1px solid var(--line); border-radius: 20px; font-size: 13px; }
 .status.ready { background: #e9f6f0; color: #17604a; border-color: #b5dfcf; }
 .status.pending { background: #fff6e4; color: #74500e; border-color: #eedbb5; }
+.views { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.views button[aria-pressed="true"] { background: var(--accent); color: white; }
+.server-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0; }
+.server-metrics div { background: #f6f5fd; border-radius: 10px; padding: 10px 12px; }
+.server-metrics dt, .log-meta { color: var(--muted); font-size: 13px; }
+.server-metrics dd { margin: 3px 0 0; font-weight: 700; overflow-wrap: anywhere; }
+.section-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.section-header h2 { margin-bottom: 0; }
+.log-entry { padding: 13px 0; border-top: 1px solid var(--line); }
+.log-entry p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+#more-history { margin-top: 10px; }
+.fields label.checkbox { display: flex; align-items: center; gap: 8px; }
+.checkbox input[type="checkbox"] { width: 16px; min-height: auto; accent-color: var(--accent); }
 .card { background: white; border: 1px solid var(--line); border-radius: 16px; margin-bottom: 14px; padding: 20px 22px; }
 h2 { display: flex; align-items: center; gap: 9px; font-size: 17px; margin: 0 0 14px; }
 .step { display: grid; place-items: center; width: 24px; height: 24px; background: #eeebff; color: #48399f; border-radius: 7px; font-size: 13px; }
@@ -63,5 +76,6 @@ button:disabled { cursor: wait; opacity: .65; }
   .masthead { margin-bottom: 14px; }
   .card { padding: 16px; border-radius: 12px; }
   .choices, .fields, .active-details { grid-template-columns: minmax(0, 1fr); }
+  .server-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   input:not([type="radio"]), select, textarea { font-size: 16px; }
 }

@@ -5,11 +5,13 @@ import copy
 import json
 import os
 import re
+import sqlite3
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .config import CREDENTIAL_ENV, dialogue_mode, doubao_uses_api_key, missing_credentials, resolve_config
@@ -23,7 +25,7 @@ HEADERS = {
     "X-Content-Type-Options": "nosniff",
 }
 FIELDS = {
-    "s2s": {"model", "region", "workspace_id", "url", "voice", "instructions", "api_key"},
+    "s2s": {"model", "region", "workspace_id", "url", "voice", "instructions", "api_key", "log_input_transcript"},
     "stt": {"provider", "url", "resource_id", "auth_mode", "api_key", "app_id", "access_token"},
     "llm": {"url", "model", "api_key"},
     "tts": {"voice"},
@@ -47,7 +49,8 @@ def public_config(config):
         "mode": dialogue_mode(config),
         "missing": missing,
         "settings": {
-            section: {key: config.get(section, {}).get(key, "") for key in sorted(fields - PRIVATE)}
+            section: {key: config.get(section, {}).get(key, key == "log_input_transcript" or "")
+                      for key in sorted(fields - PRIVATE)}
             for section, fields in FIELDS.items()
         },
         "saved_credentials": {
@@ -78,6 +81,11 @@ def apply_changes(config, payload):
             raise ValueError("配置含有不支持的字段。")
         target = config.setdefault(section, {})
         for name, value in fields.items():
+            if name == "log_input_transcript" and isinstance(value, bool):
+                target[name] = value
+                continue
+            if name == "log_input_transcript":
+                raise ValueError("请选择是否记录用户转写。")
             if not isinstance(value, str) or len(value) > 4000:
                 raise ValueError("配置值格式无效或过长。")
             value = value.strip()
@@ -169,6 +177,31 @@ def register_admin(app, config_path, prepare, realtime_factory):
     async def get_config(request: Request):
         local_only(request)
         return JSONResponse(public_config(app.state.runtime[0]), headers=HEADERS)
+
+    @app.get("/admin/api/status", include_in_schema=False)
+    async def status(request: Request):
+        local_only(request)
+        config = app.state.runtime[0]
+        mode = dialogue_mode(config)
+        return JSONResponse({
+            "mode": mode,
+            "missing": missing_credentials(config),
+            "uptime_seconds": int(time.monotonic() - app.state.started_at),
+            "active_sessions": len(app.state.realtime_sessions),
+            "active_turns": app.state.active_turns,
+            "model": config.get("s2s" if mode == "s2s" else "llm", {}).get("model", ""),
+            "journal_ok": not app.state.journal.write_failed,
+        }, headers=HEADERS)
+
+    @app.get("/admin/api/conversations", include_in_schema=False)
+    async def conversations(request: Request, before: int | None = Query(default=None, ge=1)):
+        local_only(request)
+        try:
+            rows = await asyncio.to_thread(app.state.journal.recent, before, 31)
+        except sqlite3.Error as error:
+            raise HTTPException(500, "对话日志暂时无法读取。") from error
+        return JSONResponse({"items": rows[:30], "next_before": rows[29]["id"] if len(rows) > 30 else None},
+                            headers=HEADERS)
 
     def save(payload):
         raw = json.loads(path.read_text(encoding="utf-8-sig"))

@@ -30,6 +30,7 @@ def control(message):
 
 def register_realtime(app, get_config, factory=build_realtime):
     active = set()
+    app.state.realtime_sessions = active
 
     @app.websocket("/v1/realtime")
     async def realtime(socket: WebSocket):
@@ -94,16 +95,32 @@ def register_realtime(app, get_config, factory=build_realtime):
                             raise ProviderError("protocol", "提交需匹配当前轮次，并包含至少 100ms 音频。")
                         break
 
+                started_at, started = time.time(), time.monotonic()
+                user_text = ""
+                reply = []
+                outcome, stage = "interrupted", ""
+
                 async def pump():
+                    nonlocal user_text, outcome
                     async for response in peer.respond():
+                        kind = response["type"]
+                        if kind == "input.transcript":
+                            user_text = response["text"]
+                            continue
+                        if kind == "text.delta":
+                            reply.append(response["text"])
                         await socket.send_json({**response, "session_id": key[1], "turn_id": turn})
-                        if response["type"] == "session.ended":
+                        if kind == "turn.done":
+                            outcome = "completed"
+                        if kind == "session.ended":
+                            outcome = "ended"
                             return True
                     return False
 
                 # Watch disconnects during generation; never keep a paid upstream running after departure.
                 output = asyncio.create_task(pump())
                 incoming = asyncio.create_task(socket.receive())
+                app.state.active_turns += 1
                 try:
                     done, _ = await asyncio.wait({output, incoming}, return_when=asyncio.FIRST_COMPLETED)
                     if output in done:
@@ -116,11 +133,25 @@ def register_realtime(app, get_config, factory=build_realtime):
                         if message.get("type") == "session.close":
                             return
                         raise ProviderError("protocol", "请等待本轮完成后再发送下一轮。")
+                except WebSocketDisconnect:
+                    raise
+                except Exception as error:
+                    outcome = "failed"
+                    stage = error.stage if isinstance(error, ProviderError) else "timeout" if isinstance(error, TimeoutError) else "s2s"
+                    raise
                 finally:
                     for task in (output, incoming):
                         if not task.done():
                             task.cancel()
                     await asyncio.gather(output, incoming, return_exceptions=True)
+                    app.state.active_turns -= 1
+                    if app.state.journal:
+                        await asyncio.to_thread(
+                            app.state.journal.record, started_at=started_at, mode="s2s",
+                            model=config["s2s"]["model"], identifiers=(*key, turn),
+                            text=user_text, reply="".join(reply), outcome=outcome, stage=stage,
+                            duration_ms=round((time.monotonic() - started) * 1000),
+                        )
         except WebSocketDisconnect:
             pass
         except Exception as error:

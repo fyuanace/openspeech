@@ -270,6 +270,19 @@ class RealtimeListenerTests(unittest.TestCase):
 
 
 class QwenProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_late_input_transcript_is_matched_to_current_audio_item(self):
+        peer = QwenRealtimeSession(CONFIG)
+        peer.send = AsyncMock()
+        peer.wait_for = AsyncMock(return_value={"item_id": "current"})
+        peer.receive = AsyncMock(side_effect=[
+            {"type": "response.audio.delta", "delta": "AAA="},
+            {"type": "response.done", "response": {"status": "completed"}},
+            {"type": "conversation.item.input_audio_transcription.completed", "item_id": "previous", "transcript": "旧话"},
+            {"type": "conversation.item.input_audio_transcription.completed", "item_id": "current", "transcript": "这句"},
+        ])
+        events = [event async for event in peer.respond()]
+        self.assertEqual(events[1:], [{"type": "input.transcript", "text": "这句"}, {"type": "turn.done"}])
+
     async def test_exit_tool_is_terminal_and_cannot_select_another_session(self):
         for arguments in ("{}", '{"session_id":"other"}'):
             peer = QwenRealtimeSession(CONFIG)

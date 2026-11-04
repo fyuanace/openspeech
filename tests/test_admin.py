@@ -77,3 +77,40 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(used, ["test-new-key"])
         peer.open.assert_awaited_once()
         peer.close.assert_awaited_once()
+
+    def test_realtime_turn_is_persisted_and_visible_after_reopening_the_app(self):
+        class Peer:
+            async def open(self):
+                pass
+
+            async def append(self, pcm):
+                pass
+
+            async def respond(self):
+                yield {"type": "input.transcript", "text": "用户指令"}
+                yield {"type": "text.delta", "text": "小美答复"}
+                yield {"type": "turn.done"}
+
+            async def close(self):
+                pass
+
+        config = self.app.state.runtime[0]
+        app = create_app(config, realtime_factory=lambda settings: Peer(), config_path=self.path)
+        with TestClient(app, base_url=ORIGIN["Origin"], client=("127.0.0.1", 30000)) as client:
+            with client.websocket_connect("/v1/realtime", headers={"Authorization": "Bearer local-platform-token"}) as ws:
+                ws.send_json({"type": "session.start", "session_id": "s", "device_id": "test-device"})
+                self.assertEqual(ws.receive_json()["type"], "session.ready")
+                self.assertEqual(client.get("/admin/api/status").json()["active_sessions"], 1)
+                ws.send_json({"type": "turn.start", "turn_id": "t"})
+                ws.send_bytes(bytes(3200))
+                ws.send_json({"type": "input.commit", "turn_id": "t"})
+                self.assertEqual(ws.receive_json()["type"], "text.delta")
+                self.assertEqual(ws.receive_json()["type"], "turn.done")
+                ws.send_json({"type": "session.close"})
+                self.assertEqual(ws.receive()["type"], "websocket.close")
+        reopened = create_app(config, config_path=self.path)
+        client = TestClient(reopened, base_url=ORIGIN["Origin"], client=("127.0.0.1", 30000))
+        row, = client.get("/admin/api/conversations").json()["items"]
+        self.assertEqual((row["user_text"], row["reply"], row["outcome"], row["device_id"]),
+                         ("用户指令", "小美答复", "completed", "test-device"))
+        self.assertEqual(client.get("/admin/api/status").json()["active_sessions"], 0)

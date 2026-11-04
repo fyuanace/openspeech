@@ -8,6 +8,7 @@ from typing import AsyncIterator, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from websockets.asyncio.client import connect
+from websockets.exceptions import WebSocketException
 
 from .providers import ProviderError
 
@@ -16,6 +17,8 @@ OUTPUT_RATE = 24000
 MAX_TURN_BYTES = INPUT_RATE * 2 * 35
 MAX_OUTPUT_BYTES = OUTPUT_RATE * 2 * 120
 END_CONVERSATION_TOOL = "end_conversation"
+INPUT_TRANSCRIPT = "conversation.item.input_audio_transcription.completed"
+INPUT_TRANSCRIPT_FAILED = "conversation.item.input_audio_transcription.failed"
 
 
 class RealtimeSession(Protocol):
@@ -88,6 +91,8 @@ class QwenRealtimeSession:
             await self.send("session.update", session={
                 "modalities": ["text", "audio"], "turn_detection": None,
                 "instructions": instructions,
+                "input_audio_transcription": {"model": "qwen3-asr-flash-realtime"}
+                if self.settings.get("log_input_transcript", True) else None,
                 "tools": [{
                     "type": "function",
                     "name": END_CONVERSATION_TOOL,
@@ -111,7 +116,9 @@ class QwenRealtimeSession:
     async def respond(self):
         async with asyncio.timeout(120):
             await self.send("input_audio_buffer.commit")
-            await self.wait_for("input_audio_buffer.committed")
+            committed = await self.wait_for("input_audio_buffer.committed")
+            item_id = committed.get("item_id") if isinstance(committed, dict) else None
+            transcript_pending = bool(item_id and self.settings.get("log_input_transcript", True))
             await self.send("response.create")
             output_bytes = 0
             text_size = 0
@@ -119,6 +126,12 @@ class QwenRealtimeSession:
             while True:
                 event = await self.receive()
                 kind = event.get("type")
+                if kind in (INPUT_TRANSCRIPT, INPUT_TRANSCRIPT_FAILED):
+                    if transcript_pending and event.get("item_id") == item_id:
+                        transcript_pending = False
+                        if kind == INPUT_TRANSCRIPT and isinstance(event.get("transcript"), str):
+                            yield {"type": "input.transcript", "text": event["transcript"][:4000]}
+                    continue
                 if kind == "response.created":
                     response_id = event.get("response", {}).get("id")
                 if response_id and event.get("response_id", response_id) != response_id:
@@ -131,8 +144,8 @@ class QwenRealtimeSession:
                     if event.get("name") != END_CONVERSATION_TOOL or arguments != {}:
                         raise ProviderError("s2s", "模型返回了未授权的会话工具调用。")
                     # Terminal tool: the platform closes this socket instead of asking for another response.
-                    yield {"type": "session.ended"}
-                    return
+                    terminal = "session.ended"
+                    break
                 elif kind == "response.audio.delta":
                     pcm = base64.b64decode(event["delta"], validate=True)
                     output_bytes += len(pcm)
@@ -154,8 +167,26 @@ class QwenRealtimeSession:
                         raise ProviderError("s2s", "实时模型未完成本轮回复，请重新唤醒。")
                     if not output_bytes:
                         raise ProviderError("s2s", "实时模型没有返回语音，请检查音频输出配置。")
-                    yield {"type": "turn.done"}
-                    return
+                    terminal = "turn.done"
+                    break
+            if transcript_pending:
+                # Transcript delivery is independent of reply generation. Give
+                # the current item a brief grace period without failing the turn.
+                try:
+                    async with asyncio.timeout(1):
+                        while True:
+                            event = await self.receive()
+                            if event.get("item_id") != item_id:
+                                continue
+                            if event.get("type") == INPUT_TRANSCRIPT:
+                                if isinstance(event.get("transcript"), str):
+                                    yield {"type": "input.transcript", "text": event["transcript"][:4000]}
+                                break
+                            if event.get("type") == INPUT_TRANSCRIPT_FAILED:
+                                break
+                except (TimeoutError, ProviderError, WebSocketException, ValueError):
+                    pass
+            yield {"type": terminal}
 
     async def close(self):
         if self.ws is not None:

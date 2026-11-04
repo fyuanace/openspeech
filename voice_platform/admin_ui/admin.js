@@ -13,6 +13,9 @@ const missingNames = {
 let saved;
 let busy = false;
 let dirty = false;
+let view = "overview";
+let nextBefore = null;
+let loadingHistory = false;
 
 function notice(text, error = false) {
   byId("result").textContent = text;
@@ -40,7 +43,8 @@ function render(data) {
   for (const [section, fields] of Object.entries(data.settings)) {
     for (const [key, value] of Object.entries(fields)) {
       const field = input(section + "." + key);
-      if (field) field.value = value ?? "";
+      if (field?.type === "checkbox") field.checked = Boolean(value);
+      else if (field) field.value = value ?? "";
     }
   }
   const s2s = data.settings.s2s;
@@ -70,11 +74,15 @@ function render(data) {
     : "";
   byId("active-address").textContent = active.url || workspaceUrl || "未配置";
   byId("active-config").hidden = false;
+  setStatus(data);
+  form.hidden = false;
+  updateFields();
+}
+
+function setStatus(data) {
   byId("status").textContent = (data.mode === "s2s" ? "S2S" : "串联") + " · "
     + (data.missing.length ? "待配置" : "配置齐全");
   byId("status").className = "status " + (data.missing.length ? "pending" : "ready");
-  form.hidden = false;
-  updateFields();
 }
 
 async function api(path, options = {}) {
@@ -112,7 +120,7 @@ form.addEventListener("submit", async event => {
   for (const field of form.querySelectorAll("[name]")) {
     if (!field.name.includes(".") || field.matches(":disabled") || field.closest("[hidden]")) continue;
     const [section, key] = field.name.split(".");
-    (settings[section] ||= {})[key] = field.value.trim();
+    (settings[section] ||= {})[key] = field.type === "checkbox" ? field.checked : field.value.trim();
   }
   if (mode === "s2s") {
     const platform = byId("platform").value;
@@ -154,9 +162,92 @@ byId("check").addEventListener("click", async () => {
   }
 });
 
+async function loadStatus() {
+  try {
+    const data = await api("status");
+    setStatus(data);
+    const minutes = Math.floor(data.uptime_seconds / 60);
+    byId("uptime").textContent = minutes < 1 ? data.uptime_seconds + " 秒"
+      : minutes < 60 ? minutes + " 分钟" : Math.floor(minutes / 60) + " 小时 " + minutes % 60 + " 分钟";
+    byId("sessions").textContent = data.active_sessions;
+    byId("turns").textContent = data.active_turns;
+    byId("journal").textContent = data.journal_ok ? "正常" : "写入失败";
+    byId("status-error").hidden = true;
+  } catch (error) {
+    byId("status-error").textContent = "服务端状态暂时不可用。";
+    byId("status-error").hidden = false;
+  }
+}
+
+function logEntry(item) {
+  const article = document.createElement("article");
+  article.className = "log-entry";
+  const meta = document.createElement("div");
+  meta.className = "log-meta";
+  const outcome = { completed: "完成", partial: "部分完成", ended: "已结束对话", failed: "失败", interrupted: "中断" };
+  const time = new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "medium" })
+    .format(new Date(item.started_at));
+  meta.textContent = [time, item.device_id, item.mode === "s2s" ? "S2S" : "串联",
+    outcome[item.outcome] || item.outcome, item.stage, (item.duration_ms / 1000).toFixed(1) + " 秒"]
+    .filter(Boolean).join(" · ");
+  meta.title = "会话 " + item.session_id;
+  article.append(meta);
+  for (const [label, value] of [["用户", item.user_text || "无转写"], ["小美", item.reply]]) {
+    if (!value) continue;
+    const line = document.createElement("p");
+    const name = document.createElement("strong");
+    name.textContent = label + " ";
+    line.append(name, value);
+    article.append(line);
+  }
+  return article;
+}
+
+async function loadHistory(older = false) {
+  if (loadingHistory || (older && nextBefore === null)) return;
+  loadingHistory = true;
+  byId("refresh-history").disabled = true;
+  byId("more-history").disabled = true;
+  try {
+    const data = await api("conversations" + (older ? "?before=" + nextBefore : ""));
+    const list = byId("history-items");
+    if (!older) list.replaceChildren();
+    list.append(...data.items.map(logEntry));
+    byId("history-message").textContent = list.children.length ? "" : "还没有对话记录。";
+    nextBefore = data.next_before;
+    byId("more-history").hidden = nextBefore === null;
+  } catch (error) {
+    byId("history-message").textContent = error.message;
+  } finally {
+    loadingHistory = false;
+    byId("refresh-history").disabled = false;
+    byId("more-history").disabled = false;
+  }
+}
+
+function showView(name) {
+  view = name;
+  for (const button of byId("views").querySelectorAll("[data-view]")) {
+    const selected = button.dataset.view === name;
+    button.setAttribute("aria-pressed", String(selected));
+    byId(button.dataset.view).hidden = !selected;
+  }
+  if (name === "overview") loadStatus();
+  if (name === "history") loadHistory();
+}
+
+for (const button of byId("views").querySelectorAll("[data-view]")) {
+  button.addEventListener("click", () => showView(button.dataset.view));
+}
+byId("refresh-history").addEventListener("click", () => loadHistory());
+byId("more-history").addEventListener("click", () => loadHistory(true));
+setInterval(() => { if (view === "overview") loadStatus(); }, 5000);
+
 api("config").then(data => {
   render(data);
   notice(missingText());
+  byId("views").hidden = false;
+  showView(data.missing.length ? "configuration" : "overview");
 }).catch(() => {
   byId("status").textContent = "读取失败";
   byId("load-error").textContent = "无法读取配置。请确认服务端已启动，然后刷新页面。";

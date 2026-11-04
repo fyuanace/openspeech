@@ -48,6 +48,7 @@
   },
   "s2s": {
     "provider": "qwen-realtime",
+    "log_input_transcript": true,
     "model": "qwen3.8-omni-flash-realtime",
     "region": "cn-beijing",
     "workspace_id": "",

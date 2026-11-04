@@ -6,6 +6,7 @@ import secrets
 import threading
 import time
 from collections import OrderedDict
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -13,6 +14,7 @@ from fastapi.responses import JSONResponse
 from .audio import MAX_AUDIO_BYTES, decode_wav
 from .providers import ProviderError, build_providers
 from .config import dialogue_mode, missing_credentials
+from .conversation_log import ConversationLog
 from .realtime_server import register_realtime
 from .realtime import build_realtime
 
@@ -95,6 +97,9 @@ def create_app(config: dict, providers: tuple | None = None, realtime_factory=bu
         return settings, service
 
     app.state.runtime = prepare(config)
+    app.state.started_at = time.monotonic()
+    app.state.active_turns = 0
+    app.state.journal = ConversationLog(Path(config_path).resolve().parent / "data" / "conversations.sqlite3") if config_path else None
     register_realtime(app, lambda: app.state.runtime[0], realtime_factory)
     if config_path is not None:
         from .admin import register_admin
@@ -156,7 +161,21 @@ def create_app(config: dict, providers: tuple | None = None, realtime_factory=bu
                 raise ValueError("Wake phrase too long")
         except (ValueError, UnicodeError) as error:
             raise HTTPException(400, "唤醒词编码无效。") from error
-        status, result = await asyncio.to_thread(service.run, *identifiers, bytes(body), wake_word)
+        started_at, started = time.time(), time.monotonic()
+        app.state.active_turns += 1
+        try:
+            status, result = await asyncio.to_thread(service.run, *identifiers, bytes(body), wake_word)
+        finally:
+            app.state.active_turns -= 1
+        if app.state.journal:
+            await asyncio.to_thread(
+                app.state.journal.record, started_at=started_at, mode="cascade",
+                model=config["llm"]["model"], identifiers=identifiers, text=result.get("text", ""),
+                reply=result.get("reply", ""), outcome="failed" if status >= 400 else
+                "partial" if result.get("audio_error") else "completed",
+                stage=result.get("stage", "tts" if result.get("audio_error") else ""),
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
         return JSONResponse(result, status_code=status)
 
     return app
