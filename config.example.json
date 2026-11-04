@@ -1,0 +1,45 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "token": ""
+  },
+  "device": {
+    "id": "windows-pc",
+    "server_url": "http://127.0.0.1:8765",
+    "input_device": null,
+    "output_device": null,
+    "wake_word": "你好助手",
+    "wake_model": "models/vosk-model-small-cn-0.22",
+    "pre_roll_seconds": 4,
+    "silence_seconds": 1.2,
+    "max_seconds": 30,
+    "energy_threshold": 350
+  },
+  "stt": {
+    "provider": "doubao",
+    "url": "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
+    "resource_id": "volc.bigasr.auc_turbo",
+    "api_key": "",
+    "app_id": "",
+    "access_token": ""
+  },
+  "llm": {
+    "provider": "chat-completions",
+    "url": "https://api.deepseek.com/chat/completions",
+    "model": "deepseek-flash",
+    "api_key": "",
+    "system_prompt": "你是中文语音助手。用简短自然的中文回答，适合朗读。不要声称已经执行没有实际调用的业务操作。",
+    "options": {
+      "thinking": {
+        "type": "enabled"
+      },
+      "max_tokens": 4096,
+      "reasoning_effort": "low"
+    }
+  },
+  "tts": {
+    "provider": "windows",
+    "voice": "Microsoft Huihui Desktop"
+  }
+}
