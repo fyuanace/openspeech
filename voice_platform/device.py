@@ -30,7 +30,7 @@ class BackendUnavailable(ValueError):
     pass
 
 
-def ready_backend_mode(config: dict) -> str:
+def backend_health(config: dict) -> dict:
     try:
         response = httpx.get(config["device"]["server_url"].rstrip("/") + "/health", timeout=2)
         response.raise_for_status()
@@ -39,6 +39,11 @@ def ready_backend_mode(config: dict) -> str:
         raise BackendUnavailable("语音服务端不可达，请检查是否已启动。") from error
     if not isinstance(health, dict):
         raise BackendUnavailable("服务端健康检查返回无效，请检查服务地址。")
+    return health
+
+
+def ready_backend_mode(config: dict) -> str:
+    health = backend_health(config)
     if health.get("status") == "configuration_required":
         provider = "百炼 API Key 和业务空间 ID" if health.get("mode") == "s2s" else "串联模式的模型凭据"
         raise BackendUnavailable(f"服务端配置未完成，请检查{provider}。")
