@@ -14,7 +14,7 @@ from websockets.sync.client import connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 from websockets.protocol import State
 
-from .audio import FRAME_SAMPLES, SAMPLE_RATE, UtteranceCapture
+from .audio import FRAME_SAMPLES, SAMPLE_RATE, SpeechStartDetector, UtteranceCapture
 from .listener_control import ListenerStopped
 from .realtime import MAX_OUTPUT_BYTES
 from .wake import VoskWakeDetector
@@ -131,10 +131,11 @@ class RealtimeClient:
                 raise ValueError("实时服务返回了未知事件。")
 
 
-def captured_chunks(config, detector, control=None):
+def captured_chunks(config, detector, control=None, *, start_timeout=None):
     """Yield pre-roll exactly once, then live PCM; capture continues during sends."""
     settings = config["device"]
-    capture = UtteranceCapture(detector, settings)
+    capture_settings = settings if start_timeout is None else {**settings, "pre_roll_seconds": 0.5}
+    capture = UtteranceCapture(detector, capture_settings)
     capture.reset()
     frames = queue.Queue(maxsize=250)
     overflow = threading.Event()
@@ -150,12 +151,18 @@ def captured_chunks(config, detector, control=None):
     with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES,
                            device=settings.get("input_device"), channels=1, dtype="int16", callback=callback):
         last_frame = time.monotonic()
+        start_deadline = last_frame + start_timeout if start_timeout is not None else float("inf")
         while True:
             if control:
                 control.check()
+            remaining = start_deadline - time.monotonic() if capture.frames is None else float("inf")
+            if remaining <= 0:
+                return
             try:
-                frame = frames.get(timeout=0.2 if control else 5)
+                frame = frames.get(timeout=min(0.2 if control else 5, remaining))
             except queue.Empty as error:
+                if capture.frames is None and time.monotonic() >= start_deadline:
+                    return
                 if control and time.monotonic() - last_frame < 5:
                     continue
                 raise ValueError("麦克风未返回音频，请检查设备。") from error
@@ -202,23 +209,32 @@ def play_stream(client, output_device, control=None):
 
 def listen_realtime(config, control=None):
     settings = config["device"]
+    follow_up_seconds = float(settings.get("follow_up_seconds", 20))
+    if not 0 <= follow_up_seconds <= 60:
+        raise ValueError("连续对话等待时间需在 0 到 60 秒之间。")
     detector = VoskWakeDetector(settings["wake_model"], settings["wake_word"])
+    speech_start = SpeechStartDetector(float(settings["energy_threshold"]))
     client = RealtimeClient(config, control)
+    follow_up = False
     try:
         with ThreadPoolExecutor(max_workers=1) as network:
             print(f"S2S 等待唤醒：{settings['wake_word']}。可直接连说内容，Ctrl+C 退出。", flush=True)
             while True:
                 if control:
-                    control.emit("waiting")
+                    control.emit("follow_up" if follow_up else "waiting")
                 opening = None
                 pending = []
                 try:
-                    with closing(captured_chunks(config, detector, control)) as chunks:
+                    with closing(captured_chunks(config, speech_start if follow_up else detector, control,
+                                                 start_timeout=follow_up_seconds if follow_up else None)) as chunks:
                         for pcm in chunks:
                             if opening is None:
                                 if control:
-                                    control.emit("awakened", settings["wake_word"])
-                                print("已唤醒，正在收集本轮语音。", flush=True)
+                                    if follow_up:
+                                        control.emit("recording")
+                                    else:
+                                        control.emit("awakened", settings["wake_word"])
+                                print("正在收集追问。" if follow_up else "已唤醒，正在收集本轮语音。", flush=True)
                                 opening = network.submit(client.start_turn)
                             if opening.done():
                                 opening.result()
@@ -230,6 +246,10 @@ def listen_realtime(config, control=None):
                                 # Capture bounds this buffer to one utterance.
                                 pending.append(pcm)
                     if opening is None:
+                        if follow_up:
+                            client.__exit__(None, None, None)
+                            follow_up = False
+                            print("对话已结束，等待唤醒。", flush=True)
                         continue
                     if control:
                         control.emit("processing")
@@ -237,12 +257,18 @@ def listen_realtime(config, control=None):
                     for buffered in pending:
                         client.append(buffered)
                     play_stream(client, settings.get("output_device"), control)
+                    follow_up = follow_up_seconds > 0
+                    if follow_up:
+                        print(f"可以直接追问，等待 {follow_up_seconds:g} 秒。", flush=True)
+                    else:
+                        client.__exit__(None, None, None)
                 except (ValueError, OSError, WebSocketException) as error:
                     if opening is None:
                         raise
                     with suppress(Exception):
                         opening.result()
                     client.__exit__(None, None, None)
+                    follow_up = False
                     detail = str(error) if isinstance(error, ValueError) else "实时请求中断，请再说一次。"
                     print(detail, flush=True)
                     if control:

@@ -170,6 +170,42 @@ class RealtimeProtocolTests(unittest.TestCase):
 
 
 class RealtimeListenerTests(unittest.TestCase):
+    def test_follow_up_skips_wake_until_speech_wait_expires(self):
+        from voice_platform.audio import SpeechStartDetector
+        from voice_platform.listener_control import ListenerControl, ListenerStopped
+        from voice_platform.realtime_device import listen_realtime
+
+        events = []
+        detectors = []
+        received = []
+        closed = []
+        first = object()
+
+        def capture(config, detector, control, *, start_timeout):
+            detectors.append((detector, start_timeout))
+            if len(detectors) <= 2:
+                yield b"first" if len(detectors) == 1 else b"follow-up"
+            elif len(detectors) == 4:
+                raise ListenerStopped()
+
+        client = SimpleNamespace(start_turn=lambda: None, append=received.append,
+                                 __exit__=lambda *args: closed.append(True))
+        control = ListenerControl(lambda state, detail: events.append(state))
+        with patch("voice_platform.realtime_device.RealtimeClient", return_value=client), \
+                patch("voice_platform.realtime_device.VoskWakeDetector", return_value=first), \
+                patch("voice_platform.realtime_device.captured_chunks", side_effect=capture), \
+                patch("voice_platform.realtime_device.play_stream"):
+            with self.assertRaises(ListenerStopped):
+                listen_realtime(CONFIG, control=control)
+        self.assertEqual(received, [b"first", b"follow-up"])
+        self.assertEqual(events, ["waiting", "awakened", "processing", "follow_up",
+                                  "recording", "processing", "follow_up", "waiting"])
+        self.assertEqual(detectors[0], (first, None))
+        self.assertEqual(detectors[-1], (first, None))
+        self.assertIsInstance(detectors[1][0], SpeechStartDetector)
+        self.assertEqual([timeout for _, timeout in detectors[1:3]], [20, 20])
+        self.assertEqual(len(closed), 2)  # Follow-up timeout and listener shutdown.
+
     def test_capture_keeps_audio_while_realtime_session_is_opening(self):
         from threading import Event
 
@@ -180,7 +216,7 @@ class RealtimeListenerTests(unittest.TestCase):
         frames = [b"prefix", b"live frame"]
         received = []
 
-        def capture(*args):
+        def capture(*args, **kwargs):
             yield from frames
             captured.set()
 

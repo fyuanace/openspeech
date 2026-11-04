@@ -15,6 +15,26 @@ class WakeDetector(Protocol):
     def reset(self) -> None: ...
 
 
+def audio_rms(pcm: bytes) -> float:
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    return float(np.sqrt(np.mean(samples * samples)))
+
+
+class SpeechStartDetector:
+    """Require sustained input before opening a follow-up turn."""
+
+    def __init__(self, threshold: float):
+        self.threshold = max(1, threshold)
+        self.active_frames = 0
+
+    def reset(self) -> None:
+        self.active_frames = 0
+
+    def process(self, pcm: bytes) -> bool:
+        self.active_frames = self.active_frames + 1 if audio_rms(pcm) >= self.threshold else 0
+        return self.active_frames >= 5
+
+
 def encode_wav(pcm: bytes, rate: int = SAMPLE_RATE) -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as wav:
@@ -73,8 +93,7 @@ class UtteranceCapture:
     def feed(self, pcm: bytes) -> bytes | None:
         if len(pcm) != FRAME_SAMPLES * 2:
             raise ValueError("音频分片长度不正确。")
-        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
-        silent = float(np.sqrt(np.mean(samples * samples))) < self.threshold
+        silent = audio_rms(pcm) < self.threshold
         if self.frames is None:
             self.ring.append(pcm)
             if not self.detector.process(pcm):

@@ -15,7 +15,9 @@ from .listener_control import ListenerControl, ListenerStopped
 STATUS = {
     "connecting": ("连接中", "#64748b"),
     "waiting": ("等待唤醒", "#0f766e"),
+    "follow_up": ("等待追问", "#0f766e"),
     "awakened": ("已唤醒 · 正在采音", "#1d4ed8"),
+    "recording": ("正在采集追问", "#1d4ed8"),
     "processing": ("正在处理", "#7c3aed"),
     "playing": ("正在播放", "#0369a1"),
     "pausing": ("正在暂停", "#a16207"),

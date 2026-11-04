@@ -10,6 +10,7 @@
     "input_device": null,
     "output_device": null,
     "wake_word": "小美小美",
+    "follow_up_seconds": 20,
     "wake_model": "models/vosk-model-small-cn-0.22",
     "pre_roll_seconds": 4,
     "silence_seconds": 1.2,
