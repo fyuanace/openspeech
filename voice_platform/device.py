@@ -12,6 +12,19 @@ from .audio import FRAME_SAMPLES, SAMPLE_RATE, UtteranceCapture, decode_wav, enc
 from .wake import VoskWakeDetector
 
 
+def server_mode(config: dict) -> str:
+    try:
+        response = httpx.get(config["device"]["server_url"].rstrip("/") + "/v1/capabilities",
+                             headers={"Authorization": "Bearer " + config["server"]["token"]}, timeout=10)
+        response.raise_for_status()
+        mode = response.json().get("mode", "cascade")
+        if mode not in ("s2s", "cascade"):
+            raise ValueError("服务端返回了不支持的对话模式。")
+        return mode
+    except httpx.HTTPError as error:
+        raise ValueError("无法查询语音服务，请检查服务地址、启动状态及平台凭据。") from error
+
+
 def send_turn(config: dict, wav: bytes, session: str, turn: str) -> dict:
     settings = config["device"]
     headers = {"Authorization": "Bearer " + config["server"]["token"],
@@ -45,6 +58,9 @@ def play_result(result: dict, output_device=None) -> None:
 
 
 def listen(config: dict, *, wake_only: bool = False, seconds: float = 60) -> None:
+    if not wake_only and server_mode(config) == "s2s":
+        from .realtime_device import listen_realtime
+        return listen_realtime(config)
     settings = config["device"]
     detector = VoskWakeDetector(settings["wake_model"], settings["wake_word"])
     capture = UtteranceCapture(detector, settings)

@@ -2,8 +2,9 @@
 
 - 项目目录为 `voice/`，使用独立 Git 仓库，由 Findtools 通过子模块引用。
 - 目标为独立运行、通过通用接口供其他项目接入，并支持与 Findtools 联合部署。
-- 架构采用设备端与服务端分离，支持可替换的语音识别、语音合成和对话模型。
-- 首版采用 Windows 10 系统麦克风与音频输出、在线豆包 STT 和 DeepSeek LLM，首版实现采用 Vosk 中文唤醒和 Windows 本地 TTS。
+- 架构采用设备端与服务端分离，可切换 S2S 和 ASR → LLM → TTS 两种模式，默认优先 S2S。
+- Windows 10 使用系统麦克风与音频输出，Vosk 本地检测“小美小美”；S2S 首版适配通义千问实时模型。
+- 串联模式保留豆包 STT、DeepSeek LLM 和 Windows TTS，三类模型独立替换。
 - 所有终端均以一语即达为验收要求。首版代码与独立启动入口已实现，真实云端与现场效果待验。
 
 ## 文档入口
@@ -29,7 +30,7 @@
 
 1. 运行 `setup.cmd` 准备独立环境与中文唤醒模型。
 2. 运行 `test-wake.cmd` 验证系统麦克风和连续语音唤醒。
-3. 配置豆包和 DeepSeek 凭据。
+3. 默认 S2S：配置百炼 API Key 与业务空间 ID。串联模式才需豆包和 DeepSeek 凭据。
 4. 分别运行 `start-server.cmd` 与 `start-device.cmd`。
 
 具体配置、限制及验证命令见[运行指南](docs/运行指南.md)。

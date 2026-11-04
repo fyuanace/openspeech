@@ -19,6 +19,7 @@ from voice_platform.server import TurnService, create_app, remove_wake_prefix
 
 CONFIG = json.loads((Path(__file__).parents[1] / "config.example.json").read_text(encoding="utf-8"))
 CONFIG["server"]["token"] = "test-token"
+CONFIG["dialogue"]["mode"] = "cascade"
 WAV = encode_wav(np.full(1600, 500, dtype="<i2").tobytes())
 
 

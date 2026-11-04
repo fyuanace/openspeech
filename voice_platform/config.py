@@ -13,14 +13,41 @@ def load_config(path: str) -> dict:
         ("stt", "access_token", "DOUBAO_ACCESS_TOKEN"),
         ("llm", "api_key", "DEEPSEEK_API_KEY"),
         ("server", "token", "VOICE_TOKEN"),
+        ("s2s", "api_key", "DASHSCOPE_API_KEY"),
+        ("s2s", "workspace_id", "DASHSCOPE_WORKSPACE_ID"),
     ]:
         if os.environ.get(variable):
-            config[section][field] = os.environ[variable]
+            config.setdefault(section, {})[field] = os.environ[variable]
     model = Path(config["device"]["wake_model"])
     config["device"]["wake_model"] = str((source.parent / model).resolve())
     if not config["server"].get("token"):
         raise ValueError("平台连接凭据缺失，请运行 init-config 生成配置。")
     return config
+
+
+def dialogue_mode(config: dict) -> str:
+    mode = config.get("dialogue", {}).get("mode", "cascade")
+    if mode not in ("s2s", "cascade"):
+        raise ValueError("dialogue.mode 必须为 s2s 或 cascade。")
+    return mode
+
+
+def missing_credentials(config: dict) -> list[str]:
+    if dialogue_mode(config) == "s2s":
+        settings = config.get("s2s", {})
+        missing = []
+        if not settings.get("api_key"):
+            missing.append("dashscope_api_key")
+        if not settings.get("url") and not settings.get("workspace_id"):
+            missing.append("dashscope_workspace_id")
+        return missing
+    stt = config["stt"]
+    missing = []
+    if stt["provider"] == "doubao" and not (stt.get("api_key") or (stt.get("app_id") and stt.get("access_token"))):
+        missing.append("doubao_credentials")
+    if not config["llm"].get("api_key"):
+        missing.append("llm_credentials")
+    return missing
 
 
 def initialize_config(path: str, example: str) -> None:

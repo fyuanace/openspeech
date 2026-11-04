@@ -12,6 +12,9 @@ from fastapi.responses import JSONResponse
 
 from .audio import MAX_AUDIO_BYTES, decode_wav
 from .providers import ProviderError, build_providers
+from .config import dialogue_mode, missing_credentials
+from .realtime_server import register_realtime
+from .realtime import build_realtime
 
 
 def remove_wake_prefix(text: str, word: str) -> str:
@@ -85,9 +88,11 @@ class TurnService:
         return status, result
 
 
-def create_app(config: dict, providers: tuple | None = None) -> FastAPI:
+def create_app(config: dict, providers: tuple | None = None, realtime_factory=build_realtime) -> FastAPI:
     app = FastAPI(title="Voice Platform", version="0.1.0", docs_url=None, redoc_url=None)
-    service = TurnService(config, providers or build_providers(config))
+    mode = dialogue_mode(config)
+    service = TurnService(config, providers or build_providers(config)) if mode == "cascade" else None
+    register_realtime(app, config, realtime_factory)
 
     def authorize(request: Request) -> None:
         expected = "Bearer " + config["server"]["token"]
@@ -96,26 +101,30 @@ def create_app(config: dict, providers: tuple | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        missing = []
-        stt = config["stt"]
-        if stt["provider"] == "doubao" and not (stt.get("api_key") or (stt.get("app_id") and stt.get("access_token"))):
-            missing.append("doubao_credentials")
-        if not config["llm"].get("api_key"):
-            missing.append("llm_credentials")
+        missing = missing_credentials(config)
         return {"status": "configuration_required" if missing else "configured",
-                "missing": missing, "version": 1}
+                "missing": missing, "mode": mode, "version": 1}
 
     @app.get("/v1/capabilities")
     async def capabilities(request: Request):
         authorize(request)
+        if mode == "s2s":
+            return {"version": 1, "mode": mode, "modes": ["s2s", "cascade"],
+                    "endpoint": "/v1/realtime", "streaming": True, "barge_in": False,
+                    "input": {"format": "pcm_s16le", "sample_rate": 16000, "channels": 1, "sample_width": 2},
+                    "output": {"format": "pcm_s16le", "sample_rate": 24000, "channels": 1, "sample_width": 2},
+                    "providers": {"s2s": config.get("s2s", {}).get("provider")}}
         return {"version": 1, "input": {"format": "wav", "sample_rate": 16000, "channels": 1,
                                         "sample_width": 2, "max_seconds": 35},
-                "output": {"format": "wav"}, "streaming": False,
+                "output": {"format": "wav"}, "streaming": False, "mode": mode,
+                "modes": ["s2s", "cascade"], "endpoint": "/v1/turns", "barge_in": False,
                 "providers": {key: config[key]["provider"] for key in ("stt", "llm", "tts")}}
 
     @app.post("/v1/turns")
     async def turn(request: Request):
         authorize(request)
+        if service is None:
+            raise HTTPException(409, "当前为 s2s 模式，请使用 /v1/realtime。")
         identifiers = [request.headers.get(name, "") for name in ("x-device-id", "x-session-id", "x-turn-id")]
         if any(not re.fullmatch(r"[a-zA-Z0-9_.-]{1,100}", value) for value in identifiers):
             raise HTTPException(400, "需要有效的设备、会话和轮次 ID。")
