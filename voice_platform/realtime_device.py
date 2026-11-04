@@ -2,6 +2,7 @@
 import base64
 import json
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -15,13 +16,14 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 from websockets.protocol import State
 
 from .audio import FRAME_SAMPLES, SAMPLE_RATE, SpeechStartDetector, UtteranceCapture
+from .device_tools import SET_VOLUME, valid_percent, valid_volume_arguments, windows_set_volume
 from .listener_control import ListenerStopped
 from .realtime import MAX_OUTPUT_BYTES
 from .wake import VoskWakeDetector, is_conversation_exit
 
 
 class RealtimeClient:
-    def __init__(self, config, control=None):
+    def __init__(self, config, control=None, *, set_volume=windows_set_volume if sys.platform == "win32" else None):
         self.config = config
         self.session = str(uuid.uuid4())
         self.turn = None
@@ -29,6 +31,7 @@ class RealtimeClient:
         self.connection = None
         self.control = control
         self.last_turn_end = None
+        self.set_volume = set_volume
 
     def receive(self, timeout=130):
         deadline = time.monotonic() + timeout
@@ -59,7 +62,7 @@ class RealtimeClient:
                               open_timeout=10, close_timeout=3, max_size=2**20, max_queue=16)
             self.ws = self.connection.__enter__()
             self.ws.send(json.dumps({"type": "session.start", "device_id": self.config["device"]["id"],
-                                     "session_id": self.session}))
+                                     "session_id": self.session, "tools": [SET_VOLUME] if self.set_volume else []}))
             ready = self.receive(timeout=70)
             if (ready.get("type"), ready.get("session_id"), ready.get("input_rate"), ready.get("output_rate"),
                     ready.get("channels"), ready.get("sample_width")) != ("session.ready", self.session, 16000, 24000, 1, 2):
@@ -107,6 +110,7 @@ class RealtimeClient:
         self.ws.send(json.dumps({"type": "input.commit", "turn_id": self.turn}))
         deadline = time.monotonic() + 130
         size = 0
+        tool_used = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -122,6 +126,22 @@ class RealtimeClient:
                 yield {"type": "audio", "pcm": pcm}
             elif event["type"] == "text.delta":
                 yield {"type": "text", "text": event["text"]}
+            elif event["type"] == "tool.call":
+                request_id = event.get("request_id")
+                if not isinstance(request_id, str) or not 0 < len(request_id) <= 128:
+                    raise ValueError("设备工具请求缺少有效标识。")
+                arguments = event.get("arguments")
+                result = {"type": "tool.result", "session_id": self.session, "turn_id": self.turn,
+                          "request_id": request_id, "ok": False}
+                if self.set_volume and not tool_used and event.get("name") == SET_VOLUME and valid_volume_arguments(arguments):
+                    tool_used = True
+                    try:
+                        percent = self.set_volume(arguments["percent"])
+                        if valid_percent(percent):
+                            result.update(ok=True, percent=percent)
+                    except Exception:
+                        pass
+                self.ws.send(json.dumps(result))
             elif event["type"] == "session.ended":
                 yield {"type": "session.ended"}
                 return

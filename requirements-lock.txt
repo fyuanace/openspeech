@@ -29,5 +29,8 @@ uvicorn==0.54.0
 vosk==0.3.45
 websockets==17.4
 Pillow==13.0.0; sys_platform == "win32"
+comtypes==1.4.17; sys_platform == "win32"
+psutil==7.2.2; sys_platform == "win32"
+pycaw==20260927; sys_platform == "win32"
 pystray==0.19.5; sys_platform == "win32"
 six==1.17.0; sys_platform == "win32"

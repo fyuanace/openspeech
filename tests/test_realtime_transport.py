@@ -28,6 +28,8 @@ class RealtimeTransportTests(unittest.TestCase):
         received = []
         reply = b"\x11\x00" * 500
         upstream_closed = threading.Event()
+        volume_changes = []
+        tool_outputs = []
 
         @app.websocket("/fake-qwen")
         async def fake_qwen(ws: WebSocket):
@@ -41,17 +43,28 @@ class RealtimeTransportTests(unittest.TestCase):
                     event = await ws.receive_json()
                     kind = event["type"]
                     if kind == "session.update":
+                        assert "set_volume" in {tool["name"] for tool in event["session"]["tools"]}
                         await ws.send_json({"type": "session.updated"})
                     elif kind == "input_audio_buffer.append":
                         received.append(base64.b64decode(event["audio"]))
                     elif kind == "input_audio_buffer.commit":
                         await ws.send_json({"type": "input_audio_buffer.committed"})
                     elif kind == "response.create":
+                        if not tool_outputs:
+                            await ws.send_json({"type": "response.created", "response": {"id": "tool-response"}})
+                            await ws.send_json({"type": "response.function_call_arguments.done", "response_id": "tool-response",
+                                                "name": "set_volume", "call_id": "call-volume", "arguments": '{"percent":30}'})
+                            await ws.send_json({"type": "response.done", "response": {"id": "tool-response", "status": "completed"}})
+                            continue
                         await ws.send_json({"type": "response.created", "response": {"id": "r1"}})
                         await ws.send_json({"type": "response.audio.delta", "response_id": "r1",
                                             "delta": base64.b64encode(reply).decode()})
                         await ws.send_json({"type": "response.audio_transcript.delta", "delta": "收到"})
                         await ws.send_json({"type": "response.done", "response": {"id": "r1", "status": "completed"}})
+                    elif kind == "conversation.item.create":
+                        item = event["item"]
+                        assert item["type"] == "function_call_output" and item["call_id"] == "call-volume"
+                        tool_outputs.append(json.loads(item["output"]))
             except WebSocketDisconnect:
                 upstream_closed.set()
 
@@ -65,7 +78,11 @@ class RealtimeTransportTests(unittest.TestCase):
             self.assertTrue(server.started)
             self.assertEqual(server_mode(config), "s2s")
             pcm = b"\x01\x00" * 4000
-            with RealtimeClient(config) as client:
+            def set_volume(percent):
+                volume_changes.append(percent)
+                return 29  # Verify the actual device result is forwarded.
+
+            with RealtimeClient(config, set_volume=set_volume) as client:
                 client.start_turn()
                 initial_session = client.session
                 client.append(pcm)
@@ -80,6 +97,8 @@ class RealtimeTransportTests(unittest.TestCase):
                 client.append(pcm)
                 events = list(client.finish())
             self.assertEqual(b"".join(received), pcm * 3)
+            self.assertEqual(volume_changes, [30])
+            self.assertEqual(tool_outputs, [{"ok": True, "percent": 29}])
             self.assertEqual(b"".join(e["pcm"] for e in events if e["type"] == "audio"), reply)
             self.assertEqual([e["text"] for e in events if e["type"] == "text"], ["收到"])
             self.assertTrue(upstream_closed.wait(3))

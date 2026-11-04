@@ -11,6 +11,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
 from .providers import ProviderError
+from .device_tools import SET_VOLUME, VOLUME_TOOL, valid_volume_arguments
 
 INPUT_RATE = 16000
 OUTPUT_RATE = 24000
@@ -22,7 +23,7 @@ INPUT_TRANSCRIPT_FAILED = "conversation.item.input_audio_transcription.failed"
 
 
 class RealtimeSession(Protocol):
-    async def open(self) -> None: ...
+    async def open(self, *, set_volume=None) -> None: ...
     async def append(self, pcm: bytes) -> None: ...
     def respond(self) -> AsyncIterator[dict]: ...
     async def close(self) -> None: ...
@@ -53,6 +54,7 @@ class QwenRealtimeSession:
         self.settings = config["s2s"]
         self.wake_word = config["device"]["wake_word"]
         self.ws = None
+        self.set_volume = None
 
     async def send(self, kind: str, **data):
         await self.ws.send(json.dumps({"event_id": str(uuid.uuid4()), "type": kind, **data}, ensure_ascii=False))
@@ -73,7 +75,8 @@ class QwenRealtimeSession:
                 if event.get("type") == kind:
                     return event
 
-    async def open(self):
+    async def open(self, *, set_volume=None):
+        self.set_volume = set_volume
         if not self.settings.get("api_key"):
             raise ProviderError("s2s", "请配置 DASHSCOPE_API_KEY 或 s2s.api_key。")
         self.ws = await connect(qwen_url(self.settings),
@@ -88,17 +91,21 @@ class QwenRealtimeSession:
                 "直接调用 end_conversation。询问如何退出、引用退出的话、关灯或关闭其他对象时，"
                 "继续按用户的实际请求回答。"
             )
+            tools = [{
+                "type": "function",
+                "name": END_CONVERSATION_TOOL,
+                "description": "用户明确要求结束与小美的当前连续对话时，关闭本次会话并回到等待唤醒。",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            }]
+            if self.set_volume:
+                tools.append(VOLUME_TOOL)
+                instructions += " 只有设备工具返回 ok 为 true 才能告诉用户已调整音量，并按返回的实际百分比回答。"
             await self.send("session.update", session={
                 "modalities": ["text", "audio"], "turn_detection": None,
                 "instructions": instructions,
                 "input_audio_transcription": {"model": "qwen3-asr-flash-realtime"}
                 if self.settings.get("log_input_transcript", True) else None,
-                "tools": [{
-                    "type": "function",
-                    "name": END_CONVERSATION_TOOL,
-                    "description": "用户明确要求结束与小美的当前连续对话时，关闭本次会话并回到等待唤醒。",
-                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-                }],
+                "tools": tools,
                 "tool_choice": "auto",
                 "audio": {"input": {"format": {
                     "type": "pcm", "sample_rate": INPUT_RATE, "sample_format": "s16le",
@@ -123,6 +130,8 @@ class QwenRealtimeSession:
             output_bytes = 0
             text_size = 0
             response_id = None
+            volume_call = None
+            volume_called = False
             while True:
                 event = await self.receive()
                 kind = event.get("type")
@@ -141,11 +150,18 @@ class QwenRealtimeSession:
                         arguments = json.loads(event.get("arguments", ""))
                     except (ValueError, TypeError) as error:
                         raise ProviderError("s2s", "模型返回了无效的会话工具参数。") from error
-                    if event.get("name") != END_CONVERSATION_TOOL or arguments != {}:
-                        raise ProviderError("s2s", "模型返回了未授权的会话工具调用。")
-                    # Terminal tool: the platform closes this socket instead of asking for another response.
-                    terminal = "session.ended"
-                    break
+                    name = event.get("name")
+                    if name == END_CONVERSATION_TOOL and arguments == {}:
+                        terminal = "session.ended"
+                        break
+                    call_id = event.get("call_id")
+                    if (name != SET_VOLUME or not self.set_volume or volume_called
+                            or not isinstance(call_id, str) or not 0 < len(call_id) <= 128
+                            or not valid_volume_arguments(arguments)):
+                        raise ProviderError("s2s", "模型返回了未授权或无效的设备工具调用。")
+                    if volume_call is not None and volume_call != (call_id, arguments["percent"]):
+                        raise ProviderError("s2s", "每轮仅支持一次音量调整。")
+                    volume_call = (call_id, arguments["percent"])
                 elif kind == "response.audio.delta":
                     pcm = base64.b64decode(event["delta"], validate=True)
                     output_bytes += len(pcm)
@@ -165,6 +181,18 @@ class QwenRealtimeSession:
                         continue
                     if response.get("status") != "completed":
                         raise ProviderError("s2s", "实时模型未完成本轮回复，请重新唤醒。")
+                    if volume_call is not None:
+                        call_id, percent = volume_call
+                        result = await self.set_volume(percent)
+                        await self.send("conversation.item.create", item={
+                            "type": "function_call_output", "call_id": call_id,
+                            "output": json.dumps(result, ensure_ascii=False),
+                        })
+                        volume_call = None
+                        volume_called = True
+                        response_id = None
+                        await self.send("response.create")
+                        continue
                     if not output_bytes:
                         raise ProviderError("s2s", "实时模型没有返回语音，请检查音频输出配置。")
                     terminal = "turn.done"

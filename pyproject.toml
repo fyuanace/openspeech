@@ -16,6 +16,7 @@ dependencies = [
   "vosk>=0.3.45,<0.4",
   "websockets>=15,<18",
   "pystray==0.19.5; sys_platform == 'win32'",
+  "pycaw>=20260927,<20270000; sys_platform == 'win32'",
   "Pillow>=10,<14; sys_platform == 'win32'",
 ]
 
