@@ -47,6 +47,45 @@ class StubTTS:
 
 
 class CaptureTests(unittest.TestCase):
+    def test_missing_cloud_config_is_reported_only_after_local_wake(self):
+        from voice_platform.device import listen
+        from voice_platform.listener_control import ListenerControl, ListenerStopped
+
+        events = []
+
+        def report(state, detail):
+            events.append(state)
+            if events.count("waiting") == 2:
+                control.stop.set()
+
+        control = ListenerControl(report)
+        detector = SimpleNamespace(process=lambda pcm: True, reset=lambda: None)
+        health = httpx.Response(200, json={"status": "configuration_required", "mode": "s2s"},
+                                request=httpx.Request("GET", "http://localhost/health"))
+
+        class Stream:
+            def __init__(self, callback, **kwargs):
+                self.callback = callback
+
+            def __enter__(self):
+                loud = np.full(FRAME_SAMPLES, 1000, dtype="<i2").tobytes()
+                for frame in [loud] + [bytes(FRAME_SAMPLES * 2)] * 60:
+                    self.callback(frame, FRAME_SAMPLES, None, SimpleNamespace(input_overflow=False))
+
+            def __exit__(self, *args):
+                pass
+
+        with patch("voice_platform.device.httpx.get", return_value=health), \
+                patch("voice_platform.device.VoskWakeDetector", return_value=detector), \
+                patch("voice_platform.device.sd.RawInputStream", Stream), \
+                patch("voice_platform.device.send_turn") as send, \
+                patch("voice_platform.realtime_device.RealtimeClient") as realtime, redirect_stdout(io.StringIO()):
+            with self.assertRaises(ListenerStopped):
+                listen(CONFIG, control=control)
+        self.assertEqual(events, ["waiting", "awakened", "processing", "backend_unavailable", "waiting"])
+        send.assert_not_called()
+        realtime.assert_not_called()
+
     def test_wake_phrase_uses_model_vocabulary_and_rejects_unknown_words(self):
         from voice_platform.wake import wake_tokens
 

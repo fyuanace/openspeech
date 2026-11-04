@@ -206,13 +206,13 @@ def listen_realtime(config, control=None):
         raise ValueError("实时连接已断开，请检查网络和服务状态后重启设备端。") from error
 
 
-def send_pcm(config, pcm):
+def send_pcm(config, pcm, control=None):
     try:
-        with RealtimeClient(config) as client:
+        with RealtimeClient(config, control) as client:
             client.begin()
             client.append(pcm)
-            play_stream(client, config["device"].get("output_device"))
-    except (ValueError, sd.PortAudioError):
+            play_stream(client, config["device"].get("output_device"), control)
+    except (ValueError, sd.PortAudioError, ListenerStopped):
         raise
     except Exception as error:
         raise ValueError("实时连接失败，请检查网络和服务状态。") from error

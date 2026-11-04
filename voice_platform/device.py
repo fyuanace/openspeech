@@ -26,6 +26,27 @@ def server_mode(config: dict) -> str:
         raise ValueError("无法查询语音服务，请检查服务地址、启动状态及平台凭据。") from error
 
 
+class BackendUnavailable(ValueError):
+    pass
+
+
+def ready_backend_mode(config: dict) -> str:
+    try:
+        response = httpx.get(config["device"]["server_url"].rstrip("/") + "/health", timeout=2)
+        response.raise_for_status()
+        health = response.json()
+    except (httpx.HTTPError, ValueError) as error:
+        raise BackendUnavailable("语音服务端不可达，请检查是否已启动。") from error
+    if not isinstance(health, dict):
+        raise BackendUnavailable("服务端健康检查返回无效，请检查服务地址。")
+    if health.get("status") == "configuration_required":
+        provider = "百炼 API Key 和业务空间 ID" if health.get("mode") == "s2s" else "串联模式的模型凭据"
+        raise BackendUnavailable(f"服务端配置未完成，请检查{provider}。")
+    if health.get("status") != "configured" or health.get("mode", "cascade") not in ("s2s", "cascade"):
+        raise BackendUnavailable("服务端未就绪，请检查运行状态。")
+    return health.get("mode", "cascade")
+
+
 def send_turn(config: dict, wav: bytes, session: str, turn: str) -> dict:
     settings = config["device"]
     headers = {"Authorization": "Bearer " + config["server"]["token"],
@@ -77,9 +98,15 @@ def play_result(result: dict, output_device=None, control=None) -> None:
 def listen(config: dict, *, wake_only: bool = False, seconds: float = 60, control=None) -> None:
     managed = control is not None
     control = control or ListenerControl()
-    control.emit("connecting")
-    if not wake_only and server_mode(config) == "s2s":
+    mode = None
+    if not wake_only:
+        try:
+            mode = ready_backend_mode(config)
+        except BackendUnavailable:
+            pass  # Local wake stays available and reports backend status after capture.
+    if mode == "s2s":
         from .realtime_device import listen_realtime
+        control.emit("connecting")
         return listen_realtime(config, control=control if managed else None)
     control.check()
     settings = config["device"]
@@ -161,8 +188,15 @@ def listen(config: dict, *, wake_only: bool = False, seconds: float = 60, contro
         print("正在处理…")
         control.emit("processing")
         try:
-            result = send_turn(config, encode_wav(utterance), session, str(uuid.uuid4()))
-            play_result(result, settings.get("output_device"), control if managed else None)
+            if ready_backend_mode(config) == "s2s":
+                from .realtime_device import send_pcm
+                send_pcm(config, utterance, control=control if managed else None)
+            else:
+                result = send_turn(config, encode_wav(utterance), session, str(uuid.uuid4()))
+                play_result(result, settings.get("output_device"), control if managed else None)
+        except BackendUnavailable as error:
+            print(str(error), flush=True)
+            control.emit("backend_unavailable", str(error))
         except (ValueError, sd.PortAudioError) as error:
             print(str(error))
             control.emit("error", str(error))
