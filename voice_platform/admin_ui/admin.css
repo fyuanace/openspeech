@@ -32,6 +32,9 @@ h3 { font-size: 15px; margin: 14px 0 9px; }
 h3:first-child { margin-top: 0; }
 fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 .choices, .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.active-details { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 10px; margin: 0; font-size: 14px; }
+.active-details dt { color: var(--muted); }
+.active-details dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .choice { display: flex; align-items: flex-start; gap: 9px; border: 1px solid var(--line); border-radius: 12px; padding: 11px; cursor: pointer; }
 .choice:has(:checked) { border-color: var(--accent); background: #f5f3ff; }
 .choice input { margin: 5px 0 0; accent-color: var(--accent); }
@@ -59,6 +62,6 @@ button:disabled { cursor: wait; opacity: .65; }
   .shell { padding: 18px 12px 30px; }
   .masthead { margin-bottom: 14px; }
   .card { padding: 16px; border-radius: 12px; }
-  .choices, .fields { grid-template-columns: minmax(0, 1fr); }
+  .choices, .fields, .active-details { grid-template-columns: minmax(0, 1fr); }
   input:not([type="radio"]), select, textarea { font-size: 16px; }
 }

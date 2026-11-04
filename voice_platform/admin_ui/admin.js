@@ -60,6 +60,16 @@ function render(data) {
     field.placeholder = field.disabled ? "由环境变量管理" : configured ? "已配置，留空保留" : "请输入";
   }
   input("s2s.workspace_id").disabled = data.environment_fields.includes("s2s.workspace_id");
+  const active = data.mode === "s2s" ? s2s : data.settings.llm;
+  const key = data.mode === "s2s" ? "s2s.api_key" : "llm.api_key";
+  byId("active-model").textContent = active.model || "未配置";
+  byId("active-key").textContent = data.environment_fields.includes(key) ? "由环境变量管理"
+    : data.saved_credentials[key] ? "已配置" : "未配置";
+  const workspaceUrl = data.mode === "s2s" && s2s.workspace_id
+    ? `wss://${s2s.workspace_id}.${s2s.region || "cn-beijing"}.maas.aliyuncs.com/api-ws/v1/realtime`
+    : "";
+  byId("active-address").textContent = active.url || workspaceUrl || "未配置";
+  byId("active-config").hidden = false;
   byId("status").textContent = (data.mode === "s2s" ? "S2S" : "串联") + " · "
     + (data.missing.length ? "待配置" : "配置齐全");
   byId("status").className = "status " + (data.missing.length ? "pending" : "ready");

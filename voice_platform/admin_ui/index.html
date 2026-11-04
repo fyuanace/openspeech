@@ -13,6 +13,14 @@
       <div class="identity"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span><h1>小美语音</h1></div>
       <span id="status" class="status" role="status">正在读取配置</span>
     </header>
+    <section id="active-config" class="card" hidden>
+      <h2>当前生效配置</h2>
+      <dl class="active-details">
+        <div><dt>模型</dt><dd id="active-model"></dd></div>
+        <div><dt>API Key</dt><dd id="active-key"></dd></div>
+        <div class="full"><dt>服务地址</dt><dd id="active-address"></dd></div>
+      </dl>
+    </section>
     <form id="config" hidden>
       <section class="card">
         <h2><span class="step" aria-hidden="true">1</span>选择对话模式</h2>
