@@ -28,11 +28,12 @@ def control(message):
     return data
 
 
-def register_realtime(app, config, factory=build_realtime):
+def register_realtime(app, get_config, factory=build_realtime):
     active = set()
 
     @app.websocket("/v1/realtime")
     async def realtime(socket: WebSocket):
+        config = get_config()
         expected = "Bearer " + config["server"]["token"]
         if not secrets.compare_digest(socket.headers.get("authorization", "").encode(), expected.encode()):
             await socket.close(code=1008)

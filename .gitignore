@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 config.local.json
+.voice-config-*
 .env
 models/
 logs/

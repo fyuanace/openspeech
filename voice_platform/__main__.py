@@ -24,6 +24,8 @@ def main():
             import sounddevice as sd
             print(sd.query_devices())
             return
+        if args.command == "serve" and not Path(args.config).exists():
+            initialize_config(args.config, "config.example.json")
         config = load_config(args.config)
         if args.mode:
             if args.command != "serve":
@@ -32,8 +34,8 @@ def main():
         if args.command == "serve":
             import uvicorn
             from .server import create_app
-            uvicorn.run(create_app(config), host=config["server"]["host"],
-                        port=int(config["server"]["port"]), access_log=False)
+            uvicorn.run(create_app(config, config_path=args.config), host=config["server"]["host"],
+                        port=int(config["server"]["port"]), access_log=False, proxy_headers=False)
         elif args.command == "tray":
             from .tray import run_tray
             run_tray(config)

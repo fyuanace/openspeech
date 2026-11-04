@@ -26,4 +26,4 @@ voice-platform = "voice_platform.__main__:main"
 include = ["voice_platform*"]
 
 [tool.setuptools.package-data]
-voice_platform = ["*.ps1"]
+voice_platform = ["*.ps1", "admin_ui/*.html", "admin_ui/*.css", "admin_ui/*.js"]

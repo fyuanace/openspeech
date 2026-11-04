@@ -10,6 +10,7 @@ from typing import Protocol
 import httpx
 
 from .audio import decode_wav
+from .config import doubao_uses_api_key
 
 
 class ProviderError(Exception):
@@ -48,9 +49,10 @@ class DoubaoSTT:
         config = self.config
         headers = {"X-Api-Resource-Id": config["resource_id"],
                    "X-Api-Request-Id": str(uuid.uuid4()), "X-Api-Sequence": "-1"}
-        if config.get("api_key"):
+        key_mode = doubao_uses_api_key(config)
+        if key_mode and config.get("api_key"):
             headers["X-Api-Key"] = config["api_key"]
-        elif config.get("app_id") and config.get("access_token"):
+        elif not key_mode and config.get("app_id") and config.get("access_token"):
             headers.update({"X-Api-App-Key": config["app_id"],
                             "X-Api-Access-Key": config["access_token"]})
         else:

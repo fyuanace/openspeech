@@ -88,26 +88,35 @@ class TurnService:
         return status, result
 
 
-def create_app(config: dict, providers: tuple | None = None, realtime_factory=build_realtime) -> FastAPI:
+def create_app(config: dict, providers: tuple | None = None, realtime_factory=build_realtime, *, config_path=None) -> FastAPI:
     app = FastAPI(title="Voice Platform", version="0.1.0", docs_url=None, redoc_url=None)
-    mode = dialogue_mode(config)
-    service = TurnService(config, providers or build_providers(config)) if mode == "cascade" else None
-    register_realtime(app, config, realtime_factory)
+    def prepare(settings):
+        service = TurnService(settings, providers or build_providers(settings)) if dialogue_mode(settings) == "cascade" else None
+        return settings, service
 
-    def authorize(request: Request) -> None:
+    app.state.runtime = prepare(config)
+    register_realtime(app, lambda: app.state.runtime[0], realtime_factory)
+    if config_path is not None:
+        from .admin import register_admin
+        register_admin(app, config_path, prepare, realtime_factory)
+
+    def authorize(request: Request, config: dict) -> None:
         expected = "Bearer " + config["server"]["token"]
         if not secrets.compare_digest(request.headers.get("authorization", "").encode("utf-8"), expected.encode("utf-8")):
             raise HTTPException(401, "平台连接凭据不匹配，请同步设备端配置。")
 
     @app.get("/health")
     async def health():
+        config = app.state.runtime[0]
         missing = missing_credentials(config)
         return {"status": "configuration_required" if missing else "configured",
-                "missing": missing, "mode": mode, "version": 1}
+                "missing": missing, "mode": dialogue_mode(config), "version": 1}
 
     @app.get("/v1/capabilities")
     async def capabilities(request: Request):
-        authorize(request)
+        config = app.state.runtime[0]
+        authorize(request, config)
+        mode = dialogue_mode(config)
         if mode == "s2s":
             return {"version": 1, "mode": mode, "modes": ["s2s", "cascade"],
                     "endpoint": "/v1/realtime", "streaming": True, "barge_in": False,
@@ -122,7 +131,8 @@ def create_app(config: dict, providers: tuple | None = None, realtime_factory=bu
 
     @app.post("/v1/turns")
     async def turn(request: Request):
-        authorize(request)
+        config, service = app.state.runtime
+        authorize(request, config)
         if service is None:
             raise HTTPException(409, "当前为 s2s 模式，请使用 /v1/realtime。")
         identifiers = [request.headers.get(name, "") for name in ("x-device-id", "x-session-id", "x-turn-id")]
