@@ -66,10 +66,20 @@ class RealtimeTransportTests(unittest.TestCase):
             self.assertEqual(server_mode(config), "s2s")
             pcm = b"\x01\x00" * 4000
             with RealtimeClient(config) as client:
-                client.begin()
+                client.start_turn()
+                initial_session = client.session
+                client.append(pcm)
+                list(client.finish())
+                client.start_turn()
+                self.assertEqual(client.session, initial_session)
+                client.append(pcm)
+                list(client.finish())
+                client.last_turn_end -= 181
+                client.start_turn()
+                self.assertNotEqual(client.session, initial_session)
                 client.append(pcm)
                 events = list(client.finish())
-            self.assertEqual(b"".join(received), pcm)
+            self.assertEqual(b"".join(received), pcm * 3)
             self.assertEqual(b"".join(e["pcm"] for e in events if e["type"] == "audio"), reply)
             self.assertEqual([e["text"] for e in events if e["type"] == "text"], ["收到"])
             self.assertTrue(upstream_closed.wait(3))

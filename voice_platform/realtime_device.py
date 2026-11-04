@@ -5,11 +5,14 @@ import queue
 import threading
 import time
 import uuid
-from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, suppress
 from urllib.parse import urlsplit, urlunsplit
 
 import sounddevice as sd
 from websockets.sync.client import connect
+from websockets.exceptions import ConnectionClosed, WebSocketException
+from websockets.protocol import State
 
 from .audio import FRAME_SAMPLES, SAMPLE_RATE, UtteranceCapture
 from .listener_control import ListenerStopped
@@ -25,6 +28,7 @@ class RealtimeClient:
         self.ws = None
         self.connection = None
         self.control = control
+        self.last_turn_end = None
 
     def receive(self, timeout=130):
         deadline = time.monotonic() + timeout
@@ -74,6 +78,25 @@ class RealtimeClient:
         self.turn = str(uuid.uuid4())
         self.ws.send(json.dumps({"type": "turn.start", "turn_id": self.turn}))
 
+    def start_turn(self):
+        if self.control:
+            self.control.check()
+        # The platform expires idle sessions after 180 seconds. Reopen before
+        # sending any audio so a wake after a long wait can use a fresh session.
+        if self.ws is not None:
+            expired = self.last_turn_end is not None and time.monotonic() - self.last_turn_end >= 170
+            if not expired and self.ws.state is State.OPEN:
+                try:
+                    self.begin()
+                    return
+                except ConnectionClosed:
+                    pass
+            self.__exit__(None, None, None)
+        self.session = str(uuid.uuid4())
+        self.last_turn_end = None
+        self.__enter__()
+        self.begin()
+
     def append(self, pcm):
         for offset in range(0, len(pcm), 3200):
             if self.control:
@@ -102,6 +125,7 @@ class RealtimeClient:
             elif event["type"] == "turn.done":
                 if not size:
                     raise ValueError("实时服务未返回语音。")
+                self.last_turn_end = time.monotonic()
                 return
             else:
                 raise ValueError("实时服务返回了未知事件。")
@@ -137,7 +161,7 @@ def captured_chunks(config, detector, control=None):
                 raise ValueError("麦克风未返回音频，请检查设备。") from error
             last_frame = time.monotonic()
             if overflow.is_set():
-                raise ValueError("采音缓冲溢出，本轮已取消，请重启设备端。")
+                raise ValueError("采音缓冲溢出，本轮已取消。")
             was_waiting = capture.frames is None
             completed = capture.feed(frame)
             if was_waiting:
@@ -179,31 +203,52 @@ def play_stream(client, output_device, control=None):
 def listen_realtime(config, control=None):
     settings = config["device"]
     detector = VoskWakeDetector(settings["wake_model"], settings["wake_word"])
+    client = RealtimeClient(config, control)
     try:
-        with RealtimeClient(config, control) as client:
-            print(f"S2S 已连接，等待唤醒：{settings['wake_word']}。可直接连说内容，Ctrl+C 退出。", flush=True)
+        with ThreadPoolExecutor(max_workers=1) as network:
+            print(f"S2S 等待唤醒：{settings['wake_word']}。可直接连说内容，Ctrl+C 退出。", flush=True)
             while True:
                 if control:
                     control.emit("waiting")
-                started = False
-                with closing(captured_chunks(config, detector, control)) as chunks:
-                    for pcm in chunks:
-                        if not started:
-                            if control:
-                                control.emit("awakened", settings["wake_word"])
-                            client.begin()
-                            started = True
-                            print("已唤醒，正在传送语音。", flush=True)
-                        client.append(pcm)
-                print("正在回复…", flush=True)
-                if control:
-                    control.emit("processing")
-                play_stream(client, settings.get("output_device"), control)
-                print("等待唤醒。", flush=True)
-    except (ValueError, sd.PortAudioError, ListenerStopped):
-        raise
-    except Exception as error:
-        raise ValueError("实时连接已断开，请检查网络和服务状态后重启设备端。") from error
+                opening = None
+                pending = []
+                try:
+                    with closing(captured_chunks(config, detector, control)) as chunks:
+                        for pcm in chunks:
+                            if opening is None:
+                                if control:
+                                    control.emit("awakened", settings["wake_word"])
+                                print("已唤醒，正在收集本轮语音。", flush=True)
+                                opening = network.submit(client.start_turn)
+                            if opening.done():
+                                opening.result()
+                                for buffered in pending:
+                                    client.append(buffered)
+                                pending.clear()
+                                client.append(pcm)
+                            else:
+                                # Capture bounds this buffer to one utterance.
+                                pending.append(pcm)
+                    if opening is None:
+                        continue
+                    if control:
+                        control.emit("processing")
+                    opening.result()
+                    for buffered in pending:
+                        client.append(buffered)
+                    play_stream(client, settings.get("output_device"), control)
+                except (ValueError, OSError, WebSocketException) as error:
+                    if opening is None:
+                        raise
+                    with suppress(Exception):
+                        opening.result()
+                    client.__exit__(None, None, None)
+                    detail = str(error) if isinstance(error, ValueError) else "实时请求中断，请再说一次。"
+                    print(detail, flush=True)
+                    if control:
+                        control.emit("error", detail)
+    finally:
+        client.__exit__(None, None, None)
 
 
 def send_pcm(config, pcm, control=None):

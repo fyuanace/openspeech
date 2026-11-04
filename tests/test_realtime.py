@@ -169,6 +169,34 @@ class RealtimeProtocolTests(unittest.TestCase):
         self.assertEqual(b"".join(pieces), b"".join(frames))
 
 
+class RealtimeListenerTests(unittest.TestCase):
+    def test_capture_keeps_audio_while_realtime_session_is_opening(self):
+        from threading import Event
+
+        from voice_platform.listener_control import ListenerStopped
+        from voice_platform.realtime_device import listen_realtime
+
+        captured = Event()
+        frames = [b"prefix", b"live frame"]
+        received = []
+
+        def capture(*args):
+            yield from frames
+            captured.set()
+
+        def start_turn():
+            self.assertTrue(captured.wait(2), "Capture waited for the network")
+
+        client = SimpleNamespace(start_turn=start_turn, append=received.append, __exit__=lambda *args: None)
+        with patch("voice_platform.realtime_device.RealtimeClient", return_value=client), \
+                patch("voice_platform.realtime_device.VoskWakeDetector"), \
+                patch("voice_platform.realtime_device.captured_chunks", side_effect=capture), \
+                patch("voice_platform.realtime_device.play_stream", side_effect=ListenerStopped):
+            with self.assertRaises(ListenerStopped):
+                listen_realtime(CONFIG)
+        self.assertEqual(received, frames)
+
+
 class QwenProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_model_response_is_not_reported_as_success(self):
         peer = QwenRealtimeSession(CONFIG)
