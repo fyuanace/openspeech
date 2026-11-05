@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import time
@@ -17,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from .config import CREDENTIAL_ENV, dialogue_mode, doubao_uses_api_key, missing_credentials, resolve_config
 from .providers import ProviderError
 from .realtime import qwen_url
+from .mcp_tools import MAX_ENABLED_TOOLS, MAX_SERVERS, MAX_TOOLS, TOOL_NAME, McpTools, configured_servers, validate_url
 
 UI = Path(__file__).with_name("admin_ui")
 HEADERS = {
@@ -59,6 +61,7 @@ def public_config(config):
         },
         "environment_fields": [f"{section}.{field}" for section, field, variable in CREDENTIAL_ENV
                                if section in FIELDS and os.getenv(variable)],
+        "mcp_servers": public_mcp_servers(config),
     }
 
 
@@ -116,6 +119,43 @@ def apply_changes(config, payload):
             raise ValueError("请填写对话模型和 Windows 音色。")
 
 
+def apply_mcp_changes(target, fields):
+    if not isinstance(fields, dict) or fields.keys() - {"name", "url", "token", "tools", "clear_token", "enabled"}:
+        raise ValueError("MCP 配置格式无效。")
+    name = fields.get("name", target.get("name", ""))
+    url = fields.get("url", target.get("url", ""))
+    token = fields.get("token", "")
+    tools = fields.get("tools", target.get("tools", ""))
+    clear = fields.get("clear_token", False)
+    enabled = fields.get("enabled", target.get("enabled", True))
+    if (not all(isinstance(value, str) and len(value) <= 2048 for value in (url, token, tools))
+            or not isinstance(clear, bool) or not isinstance(enabled, bool)
+            or not isinstance(name, str) or not 1 <= len(name.strip()) <= 80):
+        raise ValueError("MCP 配置格式无效。")
+    url, token = url.strip(), token.strip()
+    validate_url(url)
+    if token and (not token.isascii() or not all(33 <= ord(char) <= 126 for char in token)):
+        raise ValueError("MCP 令牌包含无效字符。")
+    if url != target.get("url", ""):
+        if target.get("token") and not (token or clear):
+            raise ValueError("MCP 地址已变更，请为新地址填写令牌或清除旧令牌。")
+        tools = ""
+    names = set(tools.split())
+    if len(names) > MAX_TOOLS or any(not TOOL_NAME.fullmatch(name) for name in names):
+        raise ValueError("MCP 工具名称无效或超过 16 个。")
+    target.update(name=name.strip(), url=url, token=token or ("" if clear else target.get("token", "")),
+                  tools=" ".join(sorted(names)), enabled=enabled)
+
+
+def public_mcp_servers(config):
+    return [
+        {"id": key, "name": server["name"], "url": server["url"],
+         "has_token": bool(server.get("token")), "tools": server.get("tools", "").split(),
+         "enabled": server.get("enabled", True)}
+        for key, server in configured_servers(config).items()
+    ]
+
+
 def write_config(path: Path, config: dict):
     temporary = None
     try:
@@ -160,6 +200,7 @@ def register_admin(app, config_path, prepare, realtime_factory):
     path = Path(config_path).resolve()
     saving = asyncio.Lock()
     checking = asyncio.Lock()
+    discovering = set()
 
     @app.get("/admin", include_in_schema=False)
     async def page(request: Request):
@@ -263,3 +304,72 @@ def register_admin(app, config_path, prepare, realtime_factory):
                     except Exception:
                         pass
         return JSONResponse({"connected": True}, headers=HEADERS)
+
+    def save_mcp(server_id, fields, *, creating=False, deleting=False):
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        servers = configured_servers(raw)
+        if creating:
+            if len(servers) >= MAX_SERVERS:
+                raise ValueError(f"最多添加 {MAX_SERVERS} 台 MCP 服务器。")
+            servers[server_id] = {}
+        elif server_id not in servers:
+            raise HTTPException(404, "MCP 服务器已移除。")
+        if deleting:
+            del servers[server_id]
+        else:
+            apply_mcp_changes(servers[server_id], fields)
+        if sum(len(server.get("tools", "").split()) for server in servers.values()
+               if server.get("enabled", True)) > MAX_ENABLED_TOOLS:
+            raise ValueError(f"最多同时启用 {MAX_ENABLED_TOOLS} 个 MCP 工具。")
+        raw["mcp_servers"] = servers
+        raw.pop("mcp", None)
+        runtime = prepare(resolve_config(copy.deepcopy(raw), path))
+        write_config(path, raw)
+        return runtime
+
+    @app.post("/admin/api/mcp/servers", include_in_schema=False)
+    @app.put("/admin/api/mcp/servers/{server_id}", include_in_schema=False)
+    @app.delete("/admin/api/mcp/servers/{server_id}", include_in_schema=False)
+    async def save_mcp_server(request: Request, server_id: str = ""):
+        local_only(request)
+        deleting = request.method == "DELETE"
+        creating = request.method == "POST"
+        fields = None
+        if not deleting:
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > 8192:
+                    raise HTTPException(413, "MCP 配置内容过长。")
+                body.extend(chunk)
+            try:
+                fields = json.loads(body)
+            except ValueError as error:
+                raise HTTPException(400, "MCP 配置格式无效。") from error
+        if creating:
+            server_id = secrets.token_hex(6)
+        async with saving:
+            try:
+                app.state.runtime = await asyncio.to_thread(save_mcp, server_id, fields, creating=creating, deleting=deleting)
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from error
+            except OSError as error:
+                raise HTTPException(500, "保存失败，请检查本地配置的写入权限。") from error
+        return JSONResponse({"servers": public_mcp_servers(app.state.runtime[0]), "id": server_id}, headers=HEADERS)
+
+    @app.post("/admin/api/mcp/servers/{server_id}/tools", include_in_schema=False)
+    async def mcp_tools(request: Request, server_id: str):
+        local_only(request)
+        server = configured_servers(app.state.runtime[0]).get(server_id)
+        if server is None:
+            raise HTTPException(404, "MCP 服务器已移除。")
+        if server_id in discovering:
+            raise HTTPException(409, "正在获取 MCP 工具，请稍候。")
+        discovering.add(server_id)
+        try:
+            discovered = await McpTools(server, server_id).discover()
+        except Exception as error:
+            raise HTTPException(502, "无法读取 MCP 工具，请检查服务地址、协议和令牌。") from error
+        finally:
+            discovering.discard(server_id)
+        return JSONResponse({"tools": [{"name": name, "description": (tool.description or "")[:200]}
+                                       for name, tool in sorted(discovered.items())[:256]]}, headers=HEADERS)

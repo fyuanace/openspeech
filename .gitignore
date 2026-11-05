@@ -11,3 +11,4 @@ logs/
 data/
 build/
 dist/
+node_modules/

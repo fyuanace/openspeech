@@ -1,125 +1,14 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>小美语音 · 服务端管理</title>
-  <link rel="stylesheet" href="/admin/assets/admin.css">
-  <script src="/admin/assets/admin.js" defer></script>
-</head>
-<body>
-  <main class="shell">
-    <header class="masthead">
-      <div class="identity"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span><h1>小美语音</h1></div>
-      <span id="status" class="status" role="status">正在读取配置</span>
-    </header>
-    <nav id="views" class="views" aria-label="管理页" hidden>
-      <button type="button" class="secondary" data-view="overview" aria-pressed="true">运行状态</button>
-      <button type="button" class="secondary" data-view="history" aria-pressed="false">对话日志</button>
-      <button type="button" class="secondary" data-view="configuration" aria-pressed="false">配置</button>
-    </nav>
-    <section id="overview" hidden>
-      <section class="card">
-        <h2>服务器状态</h2>
-        <dl class="server-metrics">
-          <div><dt>运行时长</dt><dd id="uptime">—</dd></div>
-          <div><dt>实时会话</dt><dd id="sessions">—</dd></div>
-          <div><dt>处理中</dt><dd id="turns">—</dd></div>
-          <div><dt>日志存储</dt><dd id="journal">—</dd></div>
-        </dl>
-        <p id="status-error" class="error" role="status" hidden></p>
-      </section>
-      <section id="active-config" class="card" hidden>
-      <h2>当前生效配置</h2>
-      <dl class="active-details">
-        <div><dt>模型</dt><dd id="active-model"></dd></div>
-        <div><dt>API Key</dt><dd id="active-key"></dd></div>
-        <div class="full"><dt>服务地址</dt><dd id="active-address"></dd></div>
-      </dl>
-      </section>
-    </section>
-    <section id="history" class="card" hidden>
-      <div class="section-header">
-        <h2>对话日志</h2>
-        <button id="refresh-history" class="secondary" type="button">刷新</button>
-      </div>
-      <p id="history-message" role="status"></p>
-      <div id="history-items"></div>
-      <button id="more-history" type="button" class="secondary" hidden>加载更早记录</button>
-    </section>
-    <section id="configuration" hidden>
-    <form id="config" hidden>
-      <section class="card">
-        <h2><span class="step" aria-hidden="true">1</span>选择对话模式</h2>
-        <div class="choices" role="group" aria-label="对话模式">
-          <label class="choice"><input type="radio" name="mode" value="s2s"><span><strong>实时语音 S2S</strong><small>千问 Flash，语音直接输入和输出</small></span></label>
-          <label class="choice"><input type="radio" name="mode" value="cascade"><span><strong>串联模式</strong><small>语音识别 → 对话模型 → 语音合成</small></span></label>
-        </div>
-      </section>
-      <section class="card">
-        <h2><span class="step" aria-hidden="true">2</span>配置模型连接</h2>
-        <fieldset id="s2s-settings" aria-label="S2S 设置">
-          <div class="fields">
-            <label>接入平台<select id="platform">
-              <option value="qwen">千问 AI 平台</option><option value="bailian">阿里云百炼</option><option value="custom">自定义实时地址</option>
-            </select></label>
-            <label>API Key<input type="password" name="s2s.api_key" autocomplete="new-password"></label>
-            <div id="workspace" class="fields full" hidden>
-              <label>地域<select name="s2s.region"><option value="cn-beijing">北京</option><option value="ap-southeast-1">新加坡</option></select></label>
-              <label>业务空间 ID<input name="s2s.workspace_id" placeholder="填写百炼业务空间 ID"></label>
-            </div>
-            <label id="custom-url" class="full" hidden>实时 WebSocket 地址<input name="s2s.url" placeholder="wss://"></label>
-          </div>
-          <details>
-            <summary>模型与音色</summary>
-            <div class="fields">
-              <label>模型 ID<input name="s2s.model"></label>
-              <label>音色<input name="s2s.voice"></label>
-              <label class="full">对话提示词<textarea name="s2s.instructions" rows="3"></textarea></label>
-              <label class="full checkbox"><input type="checkbox" name="s2s.log_input_transcript">记录用户语音转写</label>
-            </div>
-          </details>
-        </fieldset>
-        <fieldset id="cascade-settings" aria-label="串联模式设置" hidden>
-          <h3>语音识别</h3>
-          <div class="fields">
-            <label>识别提供方<select name="stt.provider"><option value="doubao">豆包语音</option><option value="vosk">本地 Vosk</option></select></label>
-            <div id="doubao" class="fields full">
-              <label>鉴权方式<select id="stt-auth" name="stt.auth_mode"><option value="key">API Key</option><option value="legacy">App ID 与 Access Token</option></select></label>
-              <label id="stt-key">豆包 API Key<input type="password" name="stt.api_key" autocomplete="new-password"></label>
-              <div id="stt-legacy" class="fields full" hidden>
-                <label>App ID<input type="password" name="stt.app_id" autocomplete="off"></label>
-                <label>Access Token<input type="password" name="stt.access_token" autocomplete="new-password"></label>
-              </div>
-              <details class="full">
-                <summary>识别服务地址与资源</summary>
-                <div class="fields">
-                  <label>识别服务地址<input name="stt.url" type="url"></label>
-                  <label>资源 ID<input name="stt.resource_id"></label>
-                </div>
-              </details>
-            </div>
-          </div>
-          <h3>对话与播报</h3>
-          <div class="fields">
-            <label>对话模型 ID<input name="llm.model"></label>
-            <label>对话模型 API Key<input type="password" name="llm.api_key" autocomplete="new-password"></label>
-            <label>对话服务地址<input name="llm.url" type="url"></label>
-            <label>Windows 播报音色<input name="tts.voice"></label>
-          </div>
-        </fieldset>
-      </section>
-      <section class="card review">
-        <h2><span class="step" aria-hidden="true">3</span>保存与验证</h2>
-        <p id="result" role="status"></p>
-        <div class="actions">
-          <button type="submit" id="save">保存配置</button>
-          <button type="button" id="check" class="secondary" hidden>测试 S2S 连接</button>
-        </div>
-      </section>
-    </form>
-    </section>
-    <p id="load-error" class="error" role="alert" hidden></p>
-  </main>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#102c2a">
+    <title>小美语音 · 管理台</title>
+    <script type="module" crossorigin src="/admin/assets/admin.js"></script>
+    <link rel="stylesheet" crossorigin href="/admin/assets/admin.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
 </html>

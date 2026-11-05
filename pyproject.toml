@@ -11,6 +11,9 @@ dependencies = [
   "fastapi>=0.115,<1",
   "uvicorn>=0.34,<1",
   "httpx>=0.28,<1",
+  "jsonschema>=4.26,<5",
+  "mcp>=1.30,<2",
+  "referencing>=0.37,<1",
   "numpy>=1.26,<3",
   "sounddevice>=0.5,<1",
   "vosk>=0.3.45,<0.4",
@@ -27,4 +30,4 @@ voice-platform = "voice_platform.__main__:main"
 include = ["voice_platform*"]
 
 [tool.setuptools.package-data]
-voice_platform = ["*.ps1", "admin_ui/*.html", "admin_ui/*.css", "admin_ui/*.js"]
+voice_platform = ["*.ps1", "admin_ui/*.html", "admin_ui/*.css", "admin_ui/*.js", "admin_ui/THIRD_PARTY_LICENSES.md"]

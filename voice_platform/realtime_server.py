@@ -8,7 +8,6 @@ from contextlib import suppress
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import dialogue_mode
-from .device_tools import SET_VOLUME, valid_percent
 from .providers import ProviderError
 from .realtime import INPUT_RATE, OUTPUT_RATE, MAX_TURN_BYTES, build_realtime
 
@@ -54,29 +53,8 @@ def register_realtime(app, get_config, factory=build_realtime):
                 raise ProviderError("session", "实时会话已连接或连接数已满。")
             active.add(candidate)
             key = candidate
-            offers_volume = isinstance(start.get("tools"), list) and SET_VOLUME in start["tools"]
-            tool_request = None
-
-            async def set_volume(percent):
-                nonlocal tool_request
-                request_id = secrets.token_hex(16)
-                result = asyncio.get_running_loop().create_future()
-                tool_request = request_id, result
-                try:
-                    await socket.send_json({"type": "tool.call", "session_id": key[1], "turn_id": turn,
-                                            "request_id": request_id, "name": SET_VOLUME,
-                                            "arguments": {"percent": percent}})
-                    return await asyncio.wait_for(result, 8)
-                except TimeoutError:
-                    return {"ok": False, "error": "设备未在时限内确认音量。"}
-                finally:
-                    tool_request = None
-
             peer = factory(config)
-            if offers_volume:
-                await peer.open(set_volume=set_volume)
-            else:
-                await peer.open()
+            await peer.open()
             await socket.send_json({"type": "session.ready", "version": 1, "mode": "s2s",
                                     "session_id": key[1], "input_rate": INPUT_RATE,
                                     "output_rate": OUTPUT_RATE, "channels": 1, "sample_width": 2,
@@ -139,27 +117,9 @@ def register_realtime(app, get_config, factory=build_realtime):
                             return True
                     return False
 
-                async def watch_device():
-                    while True:
-                        message = await socket.receive()
-                        if not message.get("text"):
-                            return message
-                        event = control(message)
-                        if event.get("type") != "tool.result":
-                            return message
-                        if (tool_request is None or tool_request[1].done()
-                                or (event.get("session_id"), event.get("turn_id"), event.get("request_id"))
-                                != (key[1], turn, tool_request[0])):
-                            continue
-                        percent = event.get("percent")
-                        if event.get("ok") is True and valid_percent(percent):
-                            tool_request[1].set_result({"ok": True, "percent": percent})
-                        else:
-                            tool_request[1].set_result({"ok": False, "error": "设备无法确认音量调整结果。"})
-
                 # Watch disconnects during generation; never keep a paid upstream running after departure.
                 output = asyncio.create_task(pump())
-                incoming = asyncio.create_task(watch_device())
+                incoming = asyncio.create_task(socket.receive())
                 app.state.active_turns += 1
                 try:
                     done, _ = await asyncio.wait({output, incoming}, return_when=asyncio.FIRST_COMPLETED)

@@ -192,6 +192,43 @@ class RealtimeProtocolTests(unittest.TestCase):
 
 
 class RealtimeListenerTests(unittest.TestCase):
+    def test_capture_overflow_while_waiting_reopens_microphone(self):
+        from voice_platform.listener_control import ListenerControl, ListenerStopped
+        from voice_platform.realtime_device import listen_realtime
+
+        for driver_reported, reason in ((True, "麦克风采集丢帧"), (False, "应用采音队列已满")):
+            with self.subTest(driver_reported=driver_reported):
+                events = []
+                control = ListenerControl(lambda state, detail: events.append((state, detail)))
+                opened = 0
+
+                class Stream:
+                    def __init__(self, **kwargs):
+                        self.callback = kwargs["callback"]
+
+                    def __enter__(self):
+                        nonlocal opened
+                        opened += 1
+                        if opened == 2:
+                            control.stop.set()
+                            return
+                        status = SimpleNamespace(input_overflow=driver_reported)
+                        for _ in range(1 if driver_reported else 251):
+                            self.callback(bytes(640), 320, None, status)
+
+                    def __exit__(self, *args):
+                        pass
+
+                with patch("voice_platform.realtime_device.RealtimeClient") as client, \
+                        patch("voice_platform.realtime_device.VoskWakeDetector"), \
+                        patch("voice_platform.realtime_device.sd.RawInputStream", Stream):
+                    with self.assertRaises(ListenerStopped):
+                        listen_realtime(CONFIG, control=control)
+                    client.return_value.start_turn.assert_not_called()
+                self.assertEqual(opened, 2)
+                self.assertEqual([state for state, _ in events], ["waiting", "error", "waiting"])
+                self.assertIn(reason, events[1][1])
+
     def test_follow_up_skips_wake_until_speech_wait_expires(self):
         self.check_follow_up_end(exit_command=False)
 

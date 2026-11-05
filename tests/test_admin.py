@@ -54,6 +54,36 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(self.client.put("/admin/api/config", headers=ORIGIN, json=payload).status_code, 400)
         self.assertEqual(self.path.read_bytes(), original)
 
+    def test_mcp_settings_hide_token_and_clear_approvals_on_endpoint_change(self):
+        initial = json.loads(self.path.read_text(encoding="utf-8"))
+        initial.pop("mcp_servers")
+        initial["mcp"] = {"url": "http://127.0.0.1:18766/mcp", "tools": "set_volume", "token": "legacy-secret"}
+        self.path.write_text(json.dumps(initial), encoding="utf-8")
+        self.app.state.runtime = (initial, None)
+        servers = self.client.get("/admin/api/config").json()["mcp_servers"]
+        self.assertEqual([(server["id"], server["tools"]) for server in servers], [("default", ["set_volume"])])
+
+        result = self.client.post("/admin/api/mcp/servers", headers=ORIGIN,
+                                  json={"name": "示例", "url": "https://mcp.example/mcp", "token": "mcp-secret"})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertNotIn("mcp-secret", result.text)
+        self.assertNotIn("legacy-secret", result.text)
+        server_id = result.json()["id"]
+        endpoint = "/admin/api/mcp/servers/" + server_id
+
+        def save(**settings):
+            return self.client.put(endpoint, headers=ORIGIN, json=settings)
+
+        self.assertEqual(save(tools="lookup").json()["servers"][1]["tools"], ["lookup"])
+        self.assertEqual(save(url="https://other.example/mcp").status_code, 400)
+        self.assertEqual(save(url="http://other.example/mcp", clear_token=True).status_code, 400)
+        updated = save(url="https://other.example/mcp", clear_token=True)
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["servers"][1]["tools"], [])
+        self.assertFalse(updated.json()["servers"][1]["has_token"])
+        self.assertEqual(self.client.delete(endpoint, headers=ORIGIN).json()["servers"][0]["tools"], ["set_volume"])
+        self.assertNotIn("mcp", json.loads(self.path.read_text(encoding="utf-8")))
+
     def test_s2s_save_enables_connection_check_on_updated_configuration(self):
         config = copy.deepcopy(EXAMPLE)
         config["server"]["token"] = "local-platform-token"

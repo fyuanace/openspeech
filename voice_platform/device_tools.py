@@ -1,24 +1,13 @@
-"""Tool names and arguments shared by the device and the platform."""
-SET_VOLUME = "set_volume"
-VOLUME_TOOL = {
-    "type": "function",
-    "name": SET_VOLUME,
-    "description": "用户明确要求把当前电脑的系统音量设置为指定百分比时使用。没有明确数值时先询问。",
-    "parameters": {
-        "type": "object",
-        "properties": {"percent": {"type": "integer", "minimum": 0, "maximum": 100}},
-        "required": ["percent"],
-        "additionalProperties": False,
-    },
-}
+"""Windows tools exposed through the standard MCP Streamable HTTP transport."""
+
+from typing import Annotated
+
+from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, Field
 
 
-def valid_percent(value):
-    return type(value) is int and 0 <= value <= 100
-
-
-def valid_volume_arguments(arguments):
-    return isinstance(arguments, dict) and arguments.keys() == {"percent"} and valid_percent(arguments["percent"])
+class VolumeResult(BaseModel):
+    percent: int
 
 
 def windows_set_volume(percent):
@@ -33,3 +22,15 @@ def windows_set_volume(percent):
     finally:
         endpoint = None
         CoUninitialize()
+
+
+def create_device_tools(set_master_volume=windows_set_volume):
+    mcp = FastMCP("Windows 设备工具", host="127.0.0.1", port=18766,
+                  stateless_http=True, json_response=True)
+
+    @mcp.tool()
+    def set_volume(percent: Annotated[int, Field(strict=True, ge=0, le=100)]) -> VolumeResult:
+        """将这台 Windows 电脑的默认播放设备主音量设为指定百分比。用户未指定百分比时先询问。"""
+        return VolumeResult(percent=set_master_volume(percent))
+
+    return mcp

@@ -2,7 +2,6 @@
 import base64
 import json
 import queue
-import sys
 import threading
 import time
 import uuid
@@ -16,14 +15,17 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 from websockets.protocol import State
 
 from .audio import FRAME_SAMPLES, SAMPLE_RATE, SpeechStartDetector, UtteranceCapture
-from .device_tools import SET_VOLUME, valid_percent, valid_volume_arguments, windows_set_volume
 from .listener_control import ListenerStopped
 from .realtime import MAX_OUTPUT_BYTES
 from .wake import VoskWakeDetector, is_conversation_exit
 
 
+class CaptureOverflow(ValueError):
+    """The captured audio has a gap and cannot be submitted."""
+
+
 class RealtimeClient:
-    def __init__(self, config, control=None, *, set_volume=windows_set_volume if sys.platform == "win32" else None):
+    def __init__(self, config, control=None):
         self.config = config
         self.session = str(uuid.uuid4())
         self.turn = None
@@ -31,7 +33,6 @@ class RealtimeClient:
         self.connection = None
         self.control = control
         self.last_turn_end = None
-        self.set_volume = set_volume
 
     def receive(self, timeout=130):
         deadline = time.monotonic() + timeout
@@ -62,7 +63,7 @@ class RealtimeClient:
                               open_timeout=10, close_timeout=3, max_size=2**20, max_queue=16)
             self.ws = self.connection.__enter__()
             self.ws.send(json.dumps({"type": "session.start", "device_id": self.config["device"]["id"],
-                                     "session_id": self.session, "tools": [SET_VOLUME] if self.set_volume else []}))
+                                     "session_id": self.session}))
             ready = self.receive(timeout=70)
             if (ready.get("type"), ready.get("session_id"), ready.get("input_rate"), ready.get("output_rate"),
                     ready.get("channels"), ready.get("sample_width")) != ("session.ready", self.session, 16000, 24000, 1, 2):
@@ -110,7 +111,6 @@ class RealtimeClient:
         self.ws.send(json.dumps({"type": "input.commit", "turn_id": self.turn}))
         deadline = time.monotonic() + 130
         size = 0
-        tool_used = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -126,22 +126,6 @@ class RealtimeClient:
                 yield {"type": "audio", "pcm": pcm}
             elif event["type"] == "text.delta":
                 yield {"type": "text", "text": event["text"]}
-            elif event["type"] == "tool.call":
-                request_id = event.get("request_id")
-                if not isinstance(request_id, str) or not 0 < len(request_id) <= 128:
-                    raise ValueError("设备工具请求缺少有效标识。")
-                arguments = event.get("arguments")
-                result = {"type": "tool.result", "session_id": self.session, "turn_id": self.turn,
-                          "request_id": request_id, "ok": False}
-                if self.set_volume and not tool_used and event.get("name") == SET_VOLUME and valid_volume_arguments(arguments):
-                    tool_used = True
-                    try:
-                        percent = self.set_volume(arguments["percent"])
-                        if valid_percent(percent):
-                            result.update(ok=True, percent=percent)
-                    except Exception:
-                        pass
-                self.ws.send(json.dumps(result))
             elif event["type"] == "session.ended":
                 yield {"type": "session.ended"}
                 return
@@ -161,15 +145,16 @@ def captured_chunks(config, detector, control=None, *, start_timeout=None):
     capture = UtteranceCapture(detector, capture_settings)
     capture.reset()
     frames = queue.Queue(maxsize=250)
-    overflow = threading.Event()
+    input_overflow = threading.Event()
+    queue_overflow = threading.Event()
 
     def callback(data, count, timing, status):
         if status.input_overflow:
-            overflow.set()
+            input_overflow.set()
         try:
             frames.put_nowait(bytes(data))
         except queue.Full:
-            overflow.set()
+            queue_overflow.set()
 
     with sd.RawInputStream(samplerate=SAMPLE_RATE, blocksize=FRAME_SAMPLES,
                            device=settings.get("input_device"), channels=1, dtype="int16", callback=callback):
@@ -190,8 +175,10 @@ def captured_chunks(config, detector, control=None, *, start_timeout=None):
                     continue
                 raise ValueError("麦克风未返回音频，请检查设备。") from error
             last_frame = time.monotonic()
-            if overflow.is_set():
-                raise ValueError("采音缓冲溢出，本轮已取消。")
+            if input_overflow.is_set():
+                raise CaptureOverflow("麦克风采集丢帧。")
+            if queue_overflow.is_set():
+                raise CaptureOverflow("应用采音队列已满。")
             was_waiting = capture.frames is None
             completed = capture.feed(frame)
             if was_waiting:
@@ -243,6 +230,7 @@ def listen_realtime(config, control=None):
     speech_start = SpeechStartDetector(float(settings["energy_threshold"]))
     client = RealtimeClient(config, control)
     follow_up = False
+    last_overflow = float("-inf")
     try:
         with ThreadPoolExecutor(max_workers=1) as network:
             print(f"S2S 等待唤醒：{settings['wake_word']}。可直接连说内容，Ctrl+C 退出。", flush=True)
@@ -309,13 +297,20 @@ def listen_realtime(config, control=None):
                     else:
                         client.__exit__(None, None, None)
                 except (ValueError, OSError, WebSocketException) as error:
-                    if opening is None:
+                    if opening is None and not isinstance(error, CaptureOverflow):
                         raise
-                    with suppress(Exception):
-                        opening.result()
+                    if opening is not None:
+                        with suppress(Exception):
+                            opening.result()
                     client.__exit__(None, None, None)
                     follow_up = False
                     detail = str(error) if isinstance(error, ValueError) else "实时请求中断，请再说一次。"
+                    if isinstance(error, CaptureOverflow):
+                        now = time.monotonic()
+                        if now - last_overflow < 2:
+                            raise ValueError(f"{detail} 恢复监听后再次发生，请检查麦克风后继续监听。") from error
+                        last_overflow = now
+                        detail += " 已丢弃这段音频，重新开启监听。"
                     print(detail, flush=True)
                     if control:
                         control.emit("error", detail)

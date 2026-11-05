@@ -9,7 +9,8 @@ from .config import initialize_config, load_config, dialogue_mode, missing_crede
 
 def main():
     parser = argparse.ArgumentParser(description="独立语音平台")
-    parser.add_argument("command", choices=["init-config", "serve", "listen", "tray", "wake-test", "devices", "doctor", "send-wav"])
+    parser.add_argument("command", choices=["init-config", "serve", "serve-tools", "listen", "tray", "wake-test",
+                                             "devices", "doctor", "send-wav"])
     parser.add_argument("--config", default="config.local.json")
     parser.add_argument("--file", help="send-wav 的输入 WAV")
     parser.add_argument("--seconds", type=float, default=60, help="唤醒测试时长，1–300 秒")
@@ -23,6 +24,12 @@ def main():
         if args.command == "devices":
             import sounddevice as sd
             print(sd.query_devices())
+            return
+        if args.command == "serve-tools":
+            if sys.platform != "win32":
+                raise ValueError("音量工具服务需要 Windows。")
+            from .device_tools import create_device_tools
+            create_device_tools().run(transport="streamable-http")
             return
         if args.command == "serve" and not Path(args.config).exists():
             initialize_config(args.config, "config.example.json")
