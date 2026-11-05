@@ -134,6 +134,7 @@ class RealtimeTransportTests(unittest.TestCase):
                 initial_session = client.session
                 client.append(pcm)
                 list(client.finish())
+                client.report_playback(client.commit_at, time.monotonic())
                 client.start_turn()
                 self.assertEqual(client.session, initial_session)
                 client.append(pcm)

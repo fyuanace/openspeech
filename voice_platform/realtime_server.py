@@ -10,6 +10,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from .config import dialogue_mode
 from .providers import ProviderError
 from .realtime import INPUT_RATE, OUTPUT_RATE, MAX_TURN_BYTES, build_realtime
+from .turn_timing import device_measurements
 
 
 def valid_id(value):
@@ -62,6 +63,7 @@ def register_realtime(app, get_config, factory=build_realtime):
                                     "output_rate": OUTPUT_RATE, "channels": 1, "sample_width": 2,
                                     "barge_in": False})
             seen = set()
+            reportable_turn = None
             pending = None
             session_deadline = time.monotonic() + 1800
             while True:
@@ -74,9 +76,18 @@ def register_realtime(app, get_config, factory=build_realtime):
                 if event.get("type") == "session.close":
                     return
                 turn = event.get("turn_id")
+                if event.get("type") == "turn.metrics":
+                    if turn != reportable_turn or reportable_turn is None:
+                        raise ProviderError("protocol", "播放计时需匹配刚完成的轮次，且只能提交一次。")
+                    reportable_turn = None
+                    measured = device_measurements(event.get("device_timing"), playback=True)
+                    if app.state.journal and measured:
+                        await asyncio.to_thread(app.state.journal.add_device_timings, (*key, turn), measured)
+                    continue
                 if event.get("type") != "turn.start" or not valid_id(turn) or turn in seen:
                     raise ProviderError("protocol", "需要新的 turn.start，实时轮次不支持重放。")
                 seen.add(turn)
+                reportable_turn = None
                 input_started = time.monotonic()
                 size = 0
                 async with asyncio.timeout(45):
@@ -106,9 +117,13 @@ def register_realtime(app, get_config, factory=build_realtime):
                     "mcp_ms": 0,
                     "mcp_calls": 0,
                 }
+                measured = device_measurements(event.get("device_timing"))
+                if measured:
+                    timings["device"] = measured
                 user_text = ""
                 reply = []
                 outcome, stage = "interrupted", ""
+                response_finished = asyncio.Event()
 
                 async def pump():
                     nonlocal user_text, outcome
@@ -127,9 +142,10 @@ def register_realtime(app, get_config, factory=build_realtime):
                                 timings.setdefault("first_text_ms", round((time.monotonic() - started) * 1000))
                         if kind == "audio.delta" and response["audio"]:
                             timings.setdefault("first_audio_ms", round((time.monotonic() - started) * 1000))
-                        await socket.send_json({**response, "session_id": key[1], "turn_id": turn})
                         if kind == "turn.done":
                             outcome = "completed"
+                            response_finished.set()
+                        await socket.send_json({**response, "session_id": key[1], "turn_id": turn})
                         if kind == "session.ended":
                             outcome = "ended"
                             return True
@@ -150,7 +166,11 @@ def register_realtime(app, get_config, factory=build_realtime):
                         message = control(incoming.result())
                         if message.get("type") == "session.close":
                             return
-                        raise ProviderError("protocol", "请等待本轮完成后再发送下一轮。")
+                        if response_finished.is_set():
+                            await output
+                            pending = incoming.result()
+                        else:
+                            raise ProviderError("protocol", "请等待本轮完成后再发送下一轮。")
                 except WebSocketDisconnect:
                     raise
                 except Exception as error:
@@ -171,6 +191,8 @@ def register_realtime(app, get_config, factory=build_realtime):
                             duration_ms=round((time.monotonic() - started) * 1000),
                             timings=timings,
                         )
+                if outcome == "completed":
+                    reportable_turn = turn
         except WebSocketDisconnect:
             pass
         except Exception as error:

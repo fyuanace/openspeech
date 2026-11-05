@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from './api'
 import McpServers from './McpServers.vue'
 import ModelSettings from './ModelSettings.vue'
+import ConversationTiming from './ConversationTiming.vue'
 
 const tabs = [
   { id: 'overview', label: '运行概览', icon: '◫' },
@@ -32,7 +33,6 @@ const uptime = computed(() => {
 })
 const outcome = { completed: '完成', partial: '部分完成', ended: '已结束对话', failed: '失败', interrupted: '中断' }
 const formatter = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' })
-const seconds = value => (value / 1000).toFixed(2) + ' 秒'
 
 async function loadStatus() {
   try {
@@ -132,22 +132,10 @@ onUnmounted(() => clearInterval(timer))
           <p v-if="!history.length && !historyLoading && !historyError" class="muted">还没有对话记录。</p>
           <article v-for="item in history" :key="item.id" class="log">
             <div class="row log-meta">
-              <span>{{ formatter.format(new Date(item.started_at)) }} · {{ item.device_id }} · {{ item.mode === 's2s' ? 'S2S' : '串联' }} · 服务端处理 {{ seconds(item.duration_ms) }}</span>
+              <span>{{ formatter.format(new Date(item.started_at)) }} · {{ item.device_id }} · {{ item.mode === 's2s' ? 'S2S' : '串联' }}</span>
               <el-tag size="small" :type="item.outcome === 'failed' ? 'danger' : 'info'">{{ outcome[item.outcome] || item.outcome }}</el-tag>
             </div>
-            <div v-if="item.timings && Object.keys(item.timings).length" class="log-timings">
-              <span v-if="item.timings.first_audio_ms !== undefined">首段语音 {{ seconds(item.timings.first_audio_ms) }}</span>
-              <span v-if="item.timings.mcp_calls">MCP {{ seconds(item.timings.mcp_ms) }} · {{ item.timings.mcp_calls }} 次调用</span>
-              <details>
-                <summary>分段耗时</summary>
-                <dl class="details-grid">
-                  <div><dt>会话准备</dt><dd>{{ item.timings.session_setup_ms === 0 ? '复用已有连接' : seconds(item.timings.session_setup_ms) }}</dd></div>
-                  <div><dt>接收本轮音频</dt><dd>{{ seconds(item.timings.input_ms) }}</dd></div>
-                  <div><dt>输入音频长度</dt><dd>{{ seconds(item.timings.input_audio_ms) }}</dd></div>
-                  <div v-if="item.timings.first_text_ms !== undefined"><dt>首段文字</dt><dd>{{ seconds(item.timings.first_text_ms) }}</dd></div>
-                </dl>
-              </details>
-            </div>
+            <ConversationTiming :item="item" />
             <p><strong>用户</strong> {{ item.user_text || '无转写' }}</p>
             <p v-if="item.reply"><strong>小美</strong> {{ item.reply }}</p>
             <p v-if="item.stage" class="muted">{{ item.stage }}</p>

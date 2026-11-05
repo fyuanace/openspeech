@@ -98,6 +98,22 @@ class RealtimeProtocolTests(unittest.TestCase):
         self.assertTrue(self.sessions[0].closed)
         self.assertEqual(self.sessions[0].frames, [])
 
+    def test_playback_report_cannot_target_another_turn_or_be_replayed(self):
+        for target in ("other", "one"):
+            with self.subTest(target=target), self.client.websocket_connect("/v1/realtime", headers=HEADERS) as ws:
+                self.start(ws)
+                ws.send_json({"type": "turn.start", "turn_id": "one"})
+                ws.send_bytes(bytes(3200))
+                ws.send_json({"type": "input.commit", "turn_id": "one"})
+                for _ in range(3):
+                    ws.receive_json()
+                report = {"type": "turn.metrics", "turn_id": target,
+                          "device_timing": {"reply_wait_ms": 100, "playback_ms": 300}}
+                ws.send_json(report)
+                if target == "one":
+                    ws.send_json(report)  # First is valid; only the replay is rejected.
+                self.assertEqual(ws.receive_json()["stage"], "protocol")
+
     def test_terminal_tool_closes_only_its_own_session(self):
         class Ending(FakeSession):
             async def respond(self):
@@ -249,7 +265,7 @@ class RealtimeListenerTests(unittest.TestCase):
         closed = []
         first = SimpleNamespace(model=object())
 
-        def capture(config, detector, control, *, start_timeout):
+        def capture(config, detector, control, *, start_timeout, timing):
             detectors.append((detector, start_timeout))
             if len(detectors) <= 2:
                 yield b"first" if len(detectors) == 1 else follow_up

@@ -135,10 +135,15 @@ class AdminTests(unittest.TestCase):
                 self.assertEqual(client.get("/admin/api/status").json()["active_sessions"], 1)
                 ws.send_json({"type": "turn.start", "turn_id": "t"})
                 ws.send_bytes(bytes(3200))
-                ws.send_json({"type": "input.commit", "turn_id": "t"})
+                ws.send_json({"type": "input.commit", "turn_id": "t", "device_timing": {
+                    "entry": "wake", "speech_ms": 2200, "wake_ms": 900, "endpoint_ms": 800,
+                    "submit_ms": 20, "input_elapsed_ms": 3020, "first_audio_ms": 999999}})
                 self.assertEqual(ws.receive_json()["type"], "text.delta")
                 self.assertEqual(ws.receive_json()["type"], "audio.delta")
                 self.assertEqual(ws.receive_json()["type"], "turn.done")
+                ws.send_json({"type": "turn.metrics", "turn_id": "t", "device_timing": {
+                    "reply_wait_ms": 600, "playback_ms": 1800, "total_ms": 5420,
+                    "speech_ms": 999, "mcp_ms": 999}})
                 ws.send_json({"type": "session.close"})
                 self.assertEqual(ws.receive()["type"], "websocket.close")
         reopened = create_app(config, config_path=self.path)
@@ -151,3 +156,7 @@ class AdminTests(unittest.TestCase):
         self.assertEqual(row["timings"]["mcp_ms"], 25)
         self.assertEqual(row["timings"]["mcp_calls"], 1)
         self.assertGreaterEqual(row["timings"]["first_audio_ms"], row["timings"]["first_text_ms"])
+        self.assertEqual(row["timings"]["device"], {
+            "entry": "wake", "speech_ms": 2200, "wake_ms": 900, "endpoint_ms": 800,
+            "submit_ms": 20, "input_elapsed_ms": 3020,
+            "reply_wait_ms": 600, "playback_ms": 1800, "total_ms": 5420})

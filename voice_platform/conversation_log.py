@@ -58,6 +58,22 @@ class ConversationLog:
             self.write_failed = True
             LOG.error("Could not save a conversation log record")
 
+    def add_device_timings(self, identifiers, timings):
+        try:
+            with closing(sqlite3.connect(self.path)) as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT timings FROM turns WHERE mode='s2s' AND device_id=? AND session_id=? AND turn_id=?",
+                                 identifiers).fetchone()
+                if row:
+                    stored = json.loads(row[0])
+                    stored.setdefault("device", {}).update(timings)
+                    db.execute("UPDATE turns SET timings=? WHERE mode='s2s' AND device_id=? AND session_id=? AND turn_id=?",
+                               (json.dumps(stored), *identifiers))
+            self.write_failed = False
+        except sqlite3.Error:
+            self.write_failed = True
+            LOG.error("Could not save device conversation timings")
+
     def recent(self, before=None, limit=30):
         with closing(sqlite3.connect(self.path)) as db:
             db.row_factory = sqlite3.Row

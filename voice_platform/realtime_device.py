@@ -17,6 +17,7 @@ from websockets.protocol import State
 from .audio import FRAME_SAMPLES, SAMPLE_RATE, SpeechStartDetector, UtteranceCapture
 from .listener_control import ListenerStopped
 from .realtime import MAX_OUTPUT_BYTES
+from .turn_timing import CaptureTiming
 from .wake import VoskWakeDetector
 
 
@@ -33,6 +34,9 @@ class RealtimeClient:
         self.connection = None
         self.control = control
         self.last_turn_end = None
+        self.capture_timing = None
+        self.commit_at = None
+        self.input_timing = {}
 
     def receive(self, timeout=130):
         deadline = time.monotonic() + timeout
@@ -108,7 +112,10 @@ class RealtimeClient:
             self.ws.send(pcm[offset:offset + 3200])
 
     def finish(self):
-        self.ws.send(json.dumps({"type": "input.commit", "turn_id": self.turn}))
+        self.commit_at = time.monotonic()
+        self.input_timing = self.capture_timing.at_commit(self.commit_at) if self.capture_timing else {"entry": "file"}
+        self.ws.send(json.dumps({"type": "input.commit", "turn_id": self.turn,
+                                 "device_timing": self.input_timing}))
         deadline = time.monotonic() + 130
         size = 0
         while True:
@@ -137,8 +144,20 @@ class RealtimeClient:
             else:
                 raise ValueError("实时服务返回了未知事件。")
 
+    def report_playback(self, first_write, ended):
+        if first_write is None or self.commit_at is None:
+            return
+        timings = {"reply_wait_ms": max(0, round((first_write - self.commit_at) * 1000)),
+                   "playback_ms": max(0, round((ended - first_write) * 1000))}
+        if "input_elapsed_ms" in self.input_timing:
+            timings["total_ms"] = self.input_timing["input_elapsed_ms"] + round((ended - self.commit_at) * 1000)
+        # Diagnostics must not interrupt a successfully played reply.
+        with suppress(OSError, WebSocketException):
+            self.ws.send(json.dumps({"type": "turn.metrics", "turn_id": self.turn,
+                                     "device_timing": timings}))
 
-def captured_chunks(config, detector, control=None, *, start_timeout=None):
+
+def captured_chunks(config, detector, control=None, *, start_timeout=None, timing=None):
     """Yield pre-roll exactly once, then live PCM; capture continues during sends."""
     settings = config["device"]
     capture_settings = settings if start_timeout is None else {**settings, "pre_roll_seconds": 0.5}
@@ -152,7 +171,10 @@ def captured_chunks(config, detector, control=None, *, start_timeout=None):
         if status.input_overflow:
             input_overflow.set()
         try:
-            frames.put_nowait(bytes(data))
+            # PortAudio times share a clock; only their difference is used here.
+            age = max(0, timing.currentTime - timing.inputBufferAdcTime) if timing is not None else 0.02
+            frame_end = time.monotonic() - age + FRAME_SAMPLES / SAMPLE_RATE
+            frames.put_nowait((bytes(data), frame_end))
         except queue.Full:
             queue_overflow.set()
 
@@ -167,7 +189,7 @@ def captured_chunks(config, detector, control=None, *, start_timeout=None):
             if remaining <= 0:
                 return
             try:
-                frame = frames.get(timeout=min(0.2 if control else 5, remaining))
+                frame, frame_end = frames.get(timeout=min(0.2 if control else 5, remaining))
             except queue.Empty as error:
                 if capture.frames is None and time.monotonic() >= start_deadline:
                     return
@@ -181,6 +203,10 @@ def captured_chunks(config, detector, control=None, *, start_timeout=None):
                 raise CaptureOverflow("应用采音队列已满。")
             was_waiting = capture.frames is None
             completed = capture.feed(frame)
+            if timing is not None:
+                timing.observe(frame, frame_end,
+                               triggered=was_waiting and (capture.frames is not None or completed is not None),
+                               completed=completed is not None)
             if was_waiting:
                 if capture.frames is not None or completed is not None:
                     yield completed if completed is not None else b"".join(capture.frames)
@@ -194,6 +220,7 @@ def play_stream(client, output_device, control=None):
     """Play one response and report whether the server ended the conversation."""
     reply = ""
     playing = False
+    first_write = None
     with sd.RawOutputStream(samplerate=24000, channels=1, dtype="int16", device=output_device) as output:
         try:
             for event in client.finish():
@@ -201,6 +228,8 @@ def play_stream(client, output_device, control=None):
                     return True
                 if event["type"] == "audio":
                     pcm = event["pcm"]
+                    if pcm and first_write is None:
+                        first_write = time.monotonic()
                     if control and not playing:
                         control.emit("playing")
                         playing = True
@@ -215,10 +244,12 @@ def play_stream(client, output_device, control=None):
             if control and reply:
                 control.emit("reply", reply)
             print()
-            return False
         except BaseException:
             output.abort()
             raise
+    # Exiting the output stream drains queued samples before measuring completion.
+    client.report_playback(first_write, time.monotonic())
+    return False
 
 
 def listen_realtime(config, control=None):
@@ -239,9 +270,11 @@ def listen_realtime(config, control=None):
                     control.emit("follow_up" if follow_up else "waiting")
                 opening = None
                 pending = []
+                client.capture_timing = CaptureTiming(settings, follow_up=follow_up)
                 try:
                     with closing(captured_chunks(config, speech_start if follow_up else detector, control,
-                                                 start_timeout=follow_up_seconds if follow_up else None)) as chunks:
+                                                 start_timeout=follow_up_seconds if follow_up else None,
+                                                 timing=client.capture_timing)) as chunks:
                         for pcm in chunks:
                             if opening is None:
                                 if control:
