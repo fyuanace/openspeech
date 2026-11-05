@@ -84,7 +84,7 @@ onUnmounted(() => clearInterval(timer))
 <template>
   <div class="workspace">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>小美语音</div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>openspeech</div>
       <nav aria-label="管理台">
         <button v-for="tab in tabs" :key="tab.id" type="button" :aria-current="view === tab.id ? 'page' : undefined"
                 @click="navigate(tab.id)">
@@ -137,7 +137,7 @@ onUnmounted(() => clearInterval(timer))
             </div>
             <ConversationTiming :item="item" />
             <p><strong>用户</strong> {{ item.user_text || '无转写' }}</p>
-            <p v-if="item.reply"><strong>小美</strong> {{ item.reply }}</p>
+            <p v-if="item.reply"><strong>助手</strong> {{ item.reply }}</p>
             <p v-if="item.stage" class="muted">{{ item.stage }}</p>
           </article>
           <el-button v-if="cursor !== null" :loading="historyLoading" @click="loadHistory(true)">加载更早记录</el-button>

@@ -3,9 +3,9 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "findtools-voice"
+name = "openspeech"
 version = "0.1.0"
-description = "Independent device and server voice platform"
+description = "Wake-word voice platform with independent dialogue and MCP capabilities"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -24,6 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
+openspeech = "voice_platform.__main__:main"
 voice-platform = "voice_platform.__main__:main"
 
 [tool.setuptools.packages.find]

@@ -88,14 +88,14 @@ class QwenRealtimeSession:
             instructions = self.settings.get("instructions", "用简短自然的中文回答。")
             instructions += f" 用户以{self.wake_word}唤醒你，请回答随后内容，不要复述唤醒词。"
             instructions += (
-                " 如果用户明确要求结束和小美的当前对话（例如“退下”“今天聊到这儿吧”），"
+                " 如果用户明确要求结束当前语音对话（例如“退下”“今天聊到这儿吧”），"
                 "直接调用 end_conversation。询问如何退出、引用退出的话、关灯或关闭其他对象时，"
                 "继续按用户的实际请求回答。"
             )
             tools = [{
                 "type": "function",
                 "name": END_CONVERSATION_TOOL,
-                "description": "用户明确要求结束与小美的当前连续对话时，关闭本次会话并回到等待唤醒。",
+                "description": "用户明确要求结束当前连续对话时，关闭本次会话并回到等待唤醒。",
                 "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
             }]
             catalogs = await asyncio.gather(*(server.definitions() for server in self.mcp_servers))

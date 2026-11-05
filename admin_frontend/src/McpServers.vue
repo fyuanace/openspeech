@@ -121,7 +121,7 @@ function remove() {
             <el-button :disabled="Boolean(connectionChanged)" :loading="busy === 'discover'" @click="discover">发现工具</el-button>
           </div>
           <p v-if="connectionChanged" class="muted">保存连接设置后可重新发现工具。</p>
-          <p v-else-if="!catalog.length" class="muted">发现并勾选要开放给小美的工具。</p>
+          <p v-else-if="!catalog.length" class="muted">发现并勾选要开放给助手的工具。</p>
           <div v-for="tool in (connectionChanged ? [] : catalog)" :key="tool.name" class="tool-row">
             <el-checkbox :model-value="draft.tools.includes(tool.name)" :aria-label="tool.name"
                          :disabled="draft.tools.length >= 16 && !draft.tools.includes(tool.name)"

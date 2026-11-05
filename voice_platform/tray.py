@@ -76,7 +76,7 @@ def run_tray(config):
 
     root = tk.Tk()
     root.withdraw()
-    root.title("小美语音")
+    root.title("openspeech")
     scale = root.winfo_fpixels("1i") / 96
 
     def px(value):
@@ -118,7 +118,7 @@ def run_tray(config):
 
     floating = tk.Toplevel(root)
     floating.withdraw()
-    floating.title("小美语音状态")
+    floating.title("openspeech 状态")
     floating.overrideredirect(True)
     floating.attributes("-topmost", True)
     floating.attributes("-transparentcolor", TRANSPARENT)
@@ -143,7 +143,7 @@ def run_tray(config):
         events.put(("resume" if state in ("paused", "failed") else "pause", ""))
 
     item = pystray.MenuItem
-    icon = pystray.Icon("xiaomei-voice", badge(64, status_color=STATUS[state][1]), "小美语音", menu=pystray.Menu(
+    icon = pystray.Icon("openspeech", badge(64, status_color=STATUS[state][1]), "openspeech", menu=pystray.Menu(
         item(lambda _: f"设备 · {STATUS[state][0]}", send("activity")),
         item(lambda _: f"服务端 · {backend[0]}", send("activity")),
         pystray.Menu.SEPARATOR,
@@ -193,7 +193,7 @@ def run_tray(config):
         server_text.set(f"服务端 · {backend[0]}")
         device_label.configure(foreground=color)
         backend_label.configure(foreground=backend[1])
-        icon.title = f"小美语音 · {label}\n服务端 · {backend[0]}"
+        icon.title = f"openspeech · {label}\n服务端 · {backend[0]}"
         icon.update_menu()
         if color != badge_color:
             icon.icon = badge(64, status_color=color)

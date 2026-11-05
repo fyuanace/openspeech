@@ -1,0 +1,4 @@
+interface:
+  display_name: "设计文档库"
+  short_description: "维护开发者设计与 AI 设计记录两套文档库，按模块映射并同步索引和重要设计变更"
+  default_prompt: "使用 $design-docs 维护开发者设计文档库与 AI 设计记录文档库，按模块建立映射，更新当前设计、索引和重要变更。"

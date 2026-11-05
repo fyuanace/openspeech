@@ -1,5 +1,5 @@
 {
-  "name": "xiaomei-admin",
+  "name": "openspeech-admin",
   "private": true,
   "type": "module",
   "scripts": { "build": "vite build" },
