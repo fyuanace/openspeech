@@ -119,6 +119,8 @@ class AdminTests(unittest.TestCase):
             async def respond(self):
                 yield {"type": "input.transcript", "text": "用户指令"}
                 yield {"type": "text.delta", "text": "小美答复"}
+                yield {"type": "tool.completed", "duration_ms": 25}
+                yield {"type": "audio.delta", "audio": "AAA="}
                 yield {"type": "turn.done"}
 
             async def close(self):
@@ -135,6 +137,7 @@ class AdminTests(unittest.TestCase):
                 ws.send_bytes(bytes(3200))
                 ws.send_json({"type": "input.commit", "turn_id": "t"})
                 self.assertEqual(ws.receive_json()["type"], "text.delta")
+                self.assertEqual(ws.receive_json()["type"], "audio.delta")
                 self.assertEqual(ws.receive_json()["type"], "turn.done")
                 ws.send_json({"type": "session.close"})
                 self.assertEqual(ws.receive()["type"], "websocket.close")
@@ -144,3 +147,7 @@ class AdminTests(unittest.TestCase):
         self.assertEqual((row["user_text"], row["reply"], row["outcome"], row["device_id"]),
                          ("用户指令", "小美答复", "completed", "test-device"))
         self.assertEqual(client.get("/admin/api/status").json()["active_sessions"], 0)
+        self.assertEqual(row["timings"]["input_audio_ms"], 100)
+        self.assertEqual(row["timings"]["mcp_ms"], 25)
+        self.assertEqual(row["timings"]["mcp_calls"], 1)
+        self.assertGreaterEqual(row["timings"]["first_audio_ms"], row["timings"]["first_text_ms"])

@@ -54,7 +54,9 @@ def register_realtime(app, get_config, factory=build_realtime):
             active.add(candidate)
             key = candidate
             peer = factory(config)
+            setup_started = time.monotonic()
             await peer.open()
+            setup_ms = round((time.monotonic() - setup_started) * 1000)
             await socket.send_json({"type": "session.ready", "version": 1, "mode": "s2s",
                                     "session_id": key[1], "input_rate": INPUT_RATE,
                                     "output_rate": OUTPUT_RATE, "channels": 1, "sample_width": 2,
@@ -75,6 +77,7 @@ def register_realtime(app, get_config, factory=build_realtime):
                 if event.get("type") != "turn.start" or not valid_id(turn) or turn in seen:
                     raise ProviderError("protocol", "需要新的 turn.start，实时轮次不支持重放。")
                 seen.add(turn)
+                input_started = time.monotonic()
                 size = 0
                 async with asyncio.timeout(45):
                     while True:
@@ -96,6 +99,13 @@ def register_realtime(app, get_config, factory=build_realtime):
                         break
 
                 started_at, started = time.time(), time.monotonic()
+                timings = {
+                    "session_setup_ms": setup_ms if len(seen) == 1 else 0,
+                    "input_ms": round((started - input_started) * 1000),
+                    "input_audio_ms": round(size / (INPUT_RATE * 2) * 1000),
+                    "mcp_ms": 0,
+                    "mcp_calls": 0,
+                }
                 user_text = ""
                 reply = []
                 outcome, stage = "interrupted", ""
@@ -104,11 +114,19 @@ def register_realtime(app, get_config, factory=build_realtime):
                     nonlocal user_text, outcome
                     async for response in peer.respond():
                         kind = response["type"]
+                        if kind == "tool.completed":
+                            timings["mcp_ms"] += response["duration_ms"]
+                            timings["mcp_calls"] += 1
+                            continue
                         if kind == "input.transcript":
                             user_text = response["text"]
                             continue
                         if kind == "text.delta":
                             reply.append(response["text"])
+                            if response["text"]:
+                                timings.setdefault("first_text_ms", round((time.monotonic() - started) * 1000))
+                        if kind == "audio.delta" and response["audio"]:
+                            timings.setdefault("first_audio_ms", round((time.monotonic() - started) * 1000))
                         await socket.send_json({**response, "session_id": key[1], "turn_id": turn})
                         if kind == "turn.done":
                             outcome = "completed"
@@ -151,6 +169,7 @@ def register_realtime(app, get_config, factory=build_realtime):
                             model=config["s2s"]["model"], identifiers=(*key, turn),
                             text=user_text, reply="".join(reply), outcome=outcome, stage=stage,
                             duration_ms=round((time.monotonic() - started) * 1000),
+                            timings=timings,
                         )
         except WebSocketDisconnect:
             pass

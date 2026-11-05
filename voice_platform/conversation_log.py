@@ -1,6 +1,7 @@
 """Persistent, text-only conversation history for the server."""
 
 import logging
+import json
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -34,17 +35,24 @@ class ConversationLog:
                 )
             """)
 
+            db.execute("BEGIN IMMEDIATE")
+            columns = {column[1] for column in db.execute("PRAGMA table_info(turns)")}
+            if "timings" not in columns:
+                db.execute("ALTER TABLE turns ADD COLUMN timings TEXT NOT NULL DEFAULT '{}'")
+            db.commit()
+
     def record(self, *, started_at, mode, model, identifiers, text="", reply="",
-               outcome="completed", stage="", duration_ms=0):
+               outcome="completed", stage="", duration_ms=0, timings=None):
         try:
             with closing(sqlite3.connect(self.path)) as db, db:
                 db.execute("""
                     INSERT INTO turns (started_at, mode, model, device_id, session_id,
-                        turn_id, user_text, reply, outcome, stage, duration_ms)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        turn_id, user_text, reply, outcome, stage, duration_ms, timings)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (mode, device_id, session_id, turn_id) DO NOTHING
                 """, (datetime.fromtimestamp(started_at, timezone.utc).isoformat(), mode, model,
-                      *identifiers, text[:4000], reply[:16000], outcome, stage, duration_ms))
+                      *identifiers, text[:4000], reply[:16000], outcome, stage, duration_ms,
+                      json.dumps(timings or {})))
             self.write_failed = False
         except sqlite3.Error:
             self.write_failed = True
@@ -58,4 +66,9 @@ class ConversationLog:
             else:
                 rows = db.execute("SELECT * FROM turns WHERE id < ? ORDER BY id DESC LIMIT ?",
                                   (before, limit)).fetchall()
-            return [dict(row) for row in rows]
+            records = []
+            for row in rows:
+                record = dict(row)
+                record["timings"] = json.loads(record["timings"])
+                records.append(record)
+            return records

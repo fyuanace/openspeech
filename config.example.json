@@ -13,7 +13,7 @@
     "follow_up_seconds": 20,
     "wake_model": "models/vosk-model-small-cn-0.22",
     "pre_roll_seconds": 4,
-    "silence_seconds": 1.2,
+    "silence_seconds": 0.8,
     "max_seconds": 30,
     "energy_threshold": 350
   },

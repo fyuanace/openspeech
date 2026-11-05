@@ -99,7 +99,7 @@ class CaptureTests(unittest.TestCase):
 
         detector = SimpleNamespace(process=lambda pcm: True, reset=lambda: None, last_text="你好助手")
         frames = [np.full(FRAME_SAMPLES, 1000, dtype="<i2").tobytes()] * 20
-        frames += [bytes(FRAME_SAMPLES * 2)] * 60
+        frames += [bytes(FRAME_SAMPLES * 2)] * round(CONFIG["device"]["silence_seconds"] / 0.02)
 
         class InputStream:
             def __init__(self, **kwargs):
@@ -134,7 +134,7 @@ class CaptureTests(unittest.TestCase):
 
         capture = UtteranceCapture(Detector(), CONFIG["device"])
         frames = [np.full(FRAME_SAMPLES, i + 1000, dtype="<i2").tobytes() for i in range(75)]
-        frames += [bytes(FRAME_SAMPLES * 2)] * 60
+        frames += [bytes(FRAME_SAMPLES * 2)] * capture.silence_frames
         output = None
         for frame in frames:
             output = capture.feed(frame)

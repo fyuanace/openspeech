@@ -3,6 +3,7 @@ import asyncio
 import base64
 import json
 import re
+import time
 import uuid
 from typing import AsyncIterator, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -192,7 +193,9 @@ class QwenRealtimeSession:
                         raise ProviderError("s2s", "实时模型未完成本轮回复，请重新唤醒。")
                     if pending_calls:
                         for call_id, (name, arguments) in pending_calls.items():
+                            tool_started = time.monotonic()
                             result = await self.mcp_routes[name].call(name, arguments)
+                            yield {"type": "tool.completed", "duration_ms": round((time.monotonic() - tool_started) * 1000)}
                             await self.send("conversation.item.create", item={
                                 "type": "function_call_output", "call_id": call_id,
                                 "output": json.dumps(result, ensure_ascii=False),

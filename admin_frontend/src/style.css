@@ -83,6 +83,10 @@ main { width: min(100%, 1160px); padding: 32px clamp(16px, 4vw, 48px) 48px; marg
 .log + .log { border-top: 1px solid #e0ebe8; }
 .log p { margin-top: 6px; }
 .log-meta { color: #526c67; font-size: 12px; }
+.log-timings { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; margin: 9px 0; color: #526c67; font-size: 12px; }
+.log-timings details { width: 100%; }
+.log-timings summary { cursor: pointer; }
+.log-timings .details-grid { margin-top: 8px; }
 
 @media (max-width: 820px) {
   .workspace { grid-template-columns: minmax(0, 1fr); }
