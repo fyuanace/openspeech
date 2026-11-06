@@ -1,0 +1,8 @@
+Required Notice: Copyright (c) 2026 openspeech contributors (https://github.com/fyuanace/openspeech)
+
+Project-authored code, scripts and documentation are provided under the
+PolyForm Noncommercial License 1.0.0. See LICENSE for the official text.
+
+Third-party code, dependencies and models retain their own licenses.
+Bundled frontend notices: voice_platform/admin_ui/THIRD_PARTY_LICENSES.md
+Downloaded Vosk models include their own license files.

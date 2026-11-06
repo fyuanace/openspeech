@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "openspeech"
 version = "0.1.0"
 description = "Wake-word voice platform with independent dialogue and MCP capabilities"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -26,6 +28,14 @@ dependencies = [
 [project.scripts]
 openspeech = "voice_platform.__main__:main"
 voice-platform = "voice_platform.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/fyuanace/openspeech"
+Documentation = "https://github.com/fyuanace/openspeech/blob/main/docs/index.md"
+Issues = "https://github.com/fyuanace/openspeech/issues"
+
+[tool.setuptools]
+license-files = ["LICENSE", "NOTICE"]
 
 [tool.setuptools.packages.find]
 include = ["voice_platform*"]
